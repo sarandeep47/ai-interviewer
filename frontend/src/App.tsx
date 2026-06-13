@@ -1,15 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Upload, 
-  FileText, 
-  Sparkles, 
-  Send, 
-  CheckCircle2, 
-  AlertTriangle, 
-  TrendingUp, 
-  RefreshCw, 
-  Check, 
-  MessageSquare, 
+import {
+  Upload,
+  FileText,
+  Sparkles,
+  Send,
+  CheckCircle2,
+  AlertTriangle,
+  TrendingUp,
+  RefreshCw,
+  Check,
+  User,
+  MessageSquare,
+  FileUp,
+  Mail,
   Briefcase,
   AlertCircle,
   Info,
@@ -62,27 +65,27 @@ interface SessionReport {
 export default function App() {
   // Navigation states
   const [step, setStep] = useState<'upload' | 'chat' | 'report'>('upload');
-  
+
   // App config states
   const [isDemoMode, setIsDemoMode] = useState<boolean>(true);
   const [targetRole, setTargetRole] = useState<string>('Software Engineer');
   const [experienceYears, setExperienceYears] = useState<number>(3);
-  const totalQuestions = 5;
-  
+  const [totalQuestions, setTotalQuestions] = useState<number>(5);
+
   // Upload states
   const [candidateName, setCandidateName] = useState<string>('');
   const [candidateEmail, setCandidateEmail] = useState<string>('');
   const [file, setFile] = useState<File | null>(null);
   const [pasteText, setPasteText] = useState<string>('');
-  const isPasteMode = false;
+  const [isPasteMode, setIsPasteMode] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadError, setUploadError] = useState<string>('');
-  
+
   // Client-side OCR states
   const [isOcrLoading, setIsOcrLoading] = useState<boolean>(false);
   const [ocrProgress, setOcrProgress] = useState<number>(0);
   const [ocrStatus, setOcrStatus] = useState<string>('');
-  
+
   // Chat states
   const [sessionId, setSessionId] = useState<string>('');
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
@@ -91,7 +94,7 @@ export default function App() {
   const [userAnswer, setUserAnswer] = useState<string>('');
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState<boolean>(false);
   const [lastAnswerEvaluation, setLastAnswerEvaluation] = useState<string>('');
-  
+
   // Report states
   const [report, setReport] = useState<SessionReport | null>(null);
   const [isReportLoading, setIsReportLoading] = useState<boolean>(false);
@@ -183,7 +186,7 @@ export default function App() {
   const validateAndSetFile = (selectedFile: File) => {
     const ext = selectedFile.name.split('.').pop()?.toLowerCase();
     const allowed = ['pdf', 'png', 'jpg', 'jpeg', 'webp'];
-    
+
     if (ext && allowed.includes(ext)) {
       setFile(selectedFile);
       setUploadError('');
@@ -197,7 +200,7 @@ export default function App() {
     setIsOcrLoading(true);
     setOcrStatus('Initializing OCR engine...');
     setOcrProgress(0);
-    
+
     try {
       const result = await Tesseract.recognize(
         imageFile,
@@ -211,7 +214,7 @@ export default function App() {
           }
         }
       );
-      
+
       setIsOcrLoading(false);
       return result.data.text;
     } catch (err: any) {
@@ -244,7 +247,7 @@ export default function App() {
 
       const data = await response.json();
       setSessionId(data.session_id);
-      
+
       // Successfully started session, now trigger the first question
       await fetchNextQuestion(data.session_id, null);
       setStep('chat');
@@ -263,7 +266,7 @@ export default function App() {
     }
 
     setUploadError('');
-    
+
     // 1. Text Paste Mode
     if (isPasteMode && pasteText) {
       await startInterviewWithText(pasteText);
@@ -317,7 +320,7 @@ export default function App() {
         if (data.details && data.details.candidate_email) {
           setCandidateEmail(data.details.candidate_email);
         }
-        
+
         // Fetch the first question
         await fetchNextQuestion(data.session_id, null);
         setStep('chat');
@@ -356,16 +359,16 @@ export default function App() {
         if (answer !== null) {
           // Candidate answered, update conversation history with user message + evaluation
           setChatHistory(prev => [
-            ...prev, 
+            ...prev,
             { sender: 'user', message: answer }
           ]);
         }
-        
+
         // Add AI question
         setCurrentQuestion(data.question);
         setCurrentQuestionIndex(data.question_index);
         setLastAnswerEvaluation(data.evaluation || '');
-        
+
         setChatHistory(prev => [
           ...prev,
           { sender: 'ai', message: data.question, evaluation: data.evaluation }
@@ -392,7 +395,7 @@ export default function App() {
     try {
       const response = await fetch(`${API_BASE}/api/sessions/${sessId}/report`);
       if (!response.ok) throw new Error("Failed to load evaluation report.");
-      
+
       const data = await response.json();
       setReport(data);
     } catch (err) {
@@ -429,7 +432,7 @@ export default function App() {
           </div>
           <span className="logo-text">AI Interviewer</span>
         </div>
-        
+
         <div className={`api-badge ${isDemoMode ? 'demo' : ''}`}>
           <span className="dot"></span>
           <span>{isDemoMode ? 'Demo Mode (Mock AI)' : 'Gemini AI Active'}</span>
@@ -438,28 +441,28 @@ export default function App() {
 
       {/* Main Container */}
       <main className="main-content">
-        
+
         {/* STEP 1: UPLOAD & SETUP */}
         {step === 'upload' && (
           <div style={{ maxWidth: '800px', margin: '0 auto', width: '100%' }}>
             <div className="hero-section">
               <h1 className="hero-title">Practice Interviews, Led by AI</h1>
               <p className="hero-subtitle">
-                Upload your resume, select a target role, and conduct a simulated, 
+                Upload your resume, select a target role, and conduct a simulated,
                 high-fidelity technical interview with detailed feedback reports.
               </p>
             </div>
 
             <div className="glass-card">
               <form onSubmit={handleUploadSubmit}>
-                
+
                 {/* Meta details */}
                 <div className="grid-2 mb-2">
                   <div className="form-group">
                     <label className="form-label flex-gap-2">
                       <Briefcase size={16} /> Target Job Role
                     </label>
-                    <input 
+                    <input
                       type="text"
                       className="form-input"
                       placeholder="e.g. Software Engineer, React Developer"
@@ -473,7 +476,7 @@ export default function App() {
                     <label className="form-label">
                       Years of Experience: <strong style={{ color: 'var(--primary)' }}>{experienceYears === 15 ? '15+ Years' : `${experienceYears} Years`}</strong>
                     </label>
-                    <input 
+                    <input
                       type="range"
                       min="0"
                       max="15"
@@ -491,7 +494,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div 
+                <div
                   className={`upload-zone ${isDragOver ? 'dragover' : ''}`}
                   onDragOver={handleDragOver}
                   onDragLeave={handleDragLeave}
@@ -499,14 +502,14 @@ export default function App() {
                   onClick={() => document.getElementById('resume-file-input')?.click()}
                   style={{ marginTop: '1.5rem' }}
                 >
-                  <input 
-                    type="file" 
-                    id="resume-file-input" 
+                  <input
+                    type="file"
+                    id="resume-file-input"
                     style={{ display: 'none' }}
                     accept=".pdf,.png,.jpg,.jpeg,.webp"
                     onChange={handleFileChange}
                   />
-                  
+
                   <div className="upload-icon">
                     <Upload size={32} />
                   </div>
@@ -581,7 +584,7 @@ export default function App() {
 
               </form>
             </div>
-            
+
             <div style={{ marginTop: '2rem', textAlign: 'left', opacity: 0.75, fontSize: '0.85rem' }} className="glass-card">
               <h4 style={{ color: 'var(--text-primary)', marginBottom: '0.5rem' }} className="flex-gap-2">
                 <Info size={14} /> Technology Architecture Notes
@@ -611,8 +614,8 @@ export default function App() {
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                   {pastSessions.map((s) => (
-                    <div 
-                      key={s.session_id} 
+                    <div
+                      key={s.session_id}
                       onClick={() => handleViewReport(s.session_id)}
                       style={{
                         padding: '1rem',
@@ -653,11 +656,11 @@ export default function App() {
                       </div>
                       {s.final_feedback?.verdict && (
                         <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', fontSize: '0.8rem' }}>
-                          <span style={{ 
-                            padding: '0.1rem 0.4rem', 
-                            borderRadius: '4px', 
-                            background: 'rgba(255,255,255,0.06)', 
-                            color: 'var(--text-secondary)' 
+                          <span style={{
+                            padding: '0.1rem 0.4rem',
+                            borderRadius: '4px',
+                            background: 'rgba(255,255,255,0.06)',
+                            color: 'var(--text-secondary)'
                           }}>
                             Verdict: <strong style={{ color: 'var(--text-primary)' }}>{s.final_feedback.verdict}</strong>
                           </span>
@@ -674,7 +677,7 @@ export default function App() {
         {/* STEP 2: INTERVIEW CHAT */}
         {step === 'chat' && (
           <div className="interview-layout">
-            
+
             {/* Sidebar info */}
             <div className="sidebar-panel">
               <div className="glass-card interview-stats-card">
@@ -711,11 +714,11 @@ export default function App() {
 
                 {/* Feedback Indicator of Last Response */}
                 {lastAnswerEvaluation && (
-                  <div style={{ 
-                    marginTop: '1.5rem', 
+                  <div style={{
+                    marginTop: '1.5rem',
                     paddingTop: '1.25rem',
                     borderTop: '1px solid var(--border-color)',
-                    textAlign: 'left' 
+                    textAlign: 'left'
                   }}>
                     <h5 className="flex-gap-2 mb-1" style={{ color: 'var(--accent-pink)', fontSize: '0.85rem', textTransform: 'uppercase' }}>
                       <TrendingUp size={14} /> Real-time Evaluation
@@ -727,7 +730,7 @@ export default function App() {
                 )}
               </div>
 
-              <button 
+              <button
                 onClick={resetInterview}
                 className="btn btn-secondary"
                 style={{ width: '100%' }}
@@ -746,9 +749,9 @@ export default function App() {
                 <div className="progress-indicator">
                   <span>Question {Math.min(currentQuestionIndex + 1, totalQuestions)} of {totalQuestions}</span>
                   <div style={{ width: '80px', height: '6px', background: 'var(--bg-tertiary)', borderRadius: '3px', overflow: 'hidden' }}>
-                    <div style={{ 
-                      height: '100%', 
-                      background: 'var(--grad-primary)', 
+                    <div style={{
+                      height: '100%',
+                      background: 'var(--grad-primary)',
                       width: `${((currentQuestionIndex) / totalQuestions) * 100}%`,
                       transition: 'width 0.3s ease'
                     }}></div>
@@ -762,9 +765,9 @@ export default function App() {
                   // Only display user messages and AI questions, don't show the initial prompt evaluations as standard chat bubbles.
                   // Except the actual questions.
                   const isUser = msg.sender === 'user';
-                  
+
                   return (
-                    <div 
+                    <div
                       key={index}
                       className={`message-bubble ${isUser ? 'candidate' : 'ai'}`}
                     >
@@ -784,7 +787,7 @@ export default function App() {
                     <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>AI is evaluating and preparing question...</span>
                   </div>
                 )}
-                
+
                 <div ref={chatEndRef} />
               </div>
 
@@ -804,8 +807,8 @@ export default function App() {
                     }}
                     disabled={isSubmittingAnswer}
                   />
-                  <button 
-                    type="submit" 
+                  <button
+                    type="submit"
                     className="chat-send-btn"
                     disabled={isSubmittingAnswer || !userAnswer.trim()}
                   >
@@ -822,7 +825,7 @@ export default function App() {
         {/* STEP 3: FINAL REPORT */}
         {step === 'report' && (
           <div style={{ maxWidth: '900px', margin: '0 auto', width: '100%' }}>
-            
+
             {isReportLoading ? (
               <div className="glass-card text-center" style={{ padding: '5rem 2rem' }}>
                 <RefreshCw size={48} className="loader" style={{ margin: '0 auto 1.5rem auto' }} />
@@ -831,7 +834,7 @@ export default function App() {
               </div>
             ) : report && report.final_feedback ? (
               <div>
-                
+
                 <div className="report-header">
                   <h1 className="hero-title">Interview Summary Report</h1>
                   <p className="hero-subtitle">Candidate: {report.candidate_name || 'Candidate'} • Role: {report.target_role}</p>
@@ -847,11 +850,11 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                  
+
                   <div className={`verdict-badge ${report.final_feedback.verdict.toLowerCase().replace(' ', '-')}`}>
                     Verdict: {report.final_feedback.verdict}
                   </div>
-                  
+
                   <p className="report-summary-text mt-3">
                     {report.final_feedback.summary}
                   </p>
@@ -891,7 +894,7 @@ export default function App() {
                 {/* Technical & Communication Metrics */}
                 <div className="glass-card mb-3">
                   <h3 className="mb-3">Skills Assessment</h3>
-                  
+
                   <div className="rating-bar-container">
                     <div className="rating-header">
                       <span>Technical Competence</span>
@@ -918,7 +921,7 @@ export default function App() {
                 {/* Q&A Breakdown */}
                 <div className="qa-section">
                   <h3 className="mb-3 flex-gap-2"><FileText size={20} /> Question-by-Question Evaluation</h3>
-                  
+
                   {report.final_feedback.qa_breakdown.map((qa, index) => (
                     <div key={index} className="qa-card">
                       <div className="qa-question-header">
@@ -942,7 +945,7 @@ export default function App() {
                 </div>
 
                 <div className="text-center mt-3" style={{ marginBottom: '3rem' }}>
-                  <button 
+                  <button
                     onClick={resetInterview}
                     className="btn btn-primary"
                     style={{ padding: '0.8rem 2.5rem' }}

@@ -27,11 +27,84 @@ class AIService:
         return genai.GenerativeModel("gemini-1.5-flash")
 
     @classmethod
+    def _extract_metadata_locally(cls, text: str, target_role: str) -> Dict[str, Any]:
+        """
+        Extract key candidate details from resume text locally using regex and keywords.
+        Used as fallback and in Demo Mode.
+        """
+        if not text:
+            return {
+                "candidate_name": "Candidate",
+                "candidate_email": None,
+                "skills": ["Technical Skills"],
+                "experience_level": "Mid-level",
+                "summary_evaluation": f"Resume successfully uploaded for the {target_role} position."
+            }
+
+        # 1. Extract Email
+        import re
+        email_pattern = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+        emails = email_pattern.findall(text)
+        email = emails[0] if emails else None
+
+        # 2. Extract Name
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        name = "Candidate"
+        
+        # Skip common resume section headers
+        skip_keywords = {"resume", "cv", "curriculum", "vitae", "profile", "contact", "experience", "education", "skills", "summary", "page"}
+        
+        for line in lines[:5]:
+            # Keep letters and spaces
+            cleaned = "".join(c for c in line if c.isalpha() or c.isspace()).strip()
+            words = cleaned.split()
+            
+            # Candidate name is usually 2 or 3 capitalized words
+            if 2 <= len(words) <= 4:
+                if all(w[0].isupper() for w in words):
+                    if not any(w.lower() in skip_keywords for w in words):
+                        name = cleaned
+                        break
+
+        # 3. Extract Skills
+        text_lower = text.lower()
+        skills = []
+        common_skills = [
+            "javascript", "typescript", "react", "python", "fastapi", "django", 
+            "node", "java", "sql", "aws", "docker", "c++", "css", "html", "git",
+            "kubernetes", "pytorch", "tensorflow", "machine learning", "nlp", "llm"
+        ]
+        for skill in common_skills:
+            if skill in text_lower:
+                skills.append(skill.capitalize() if skill not in ["aws", "sql", "html", "css", "llm", "nlp"] else skill.upper())
+                
+        if not skills:
+            skills = ["Software Development", "Problem Solving", "Communication"]
+
+        # 4. Experience Level
+        exp = "Mid-level"
+        if "senior" in text_lower or "lead" in text_lower or "manager" in text_lower or "architect" in text_lower:
+            exp = "Senior"
+        elif "junior" in text_lower or "intern" in text_lower or "student" in text_lower or "graduate" in text_lower:
+            exp = "Entry-level"
+
+        return {
+            "candidate_name": name,
+            "candidate_email": email,
+            "skills": skills[:6],
+            "experience_level": exp,
+            "summary_evaluation": f"Candidate profile analyzed locally. Demonstrates capabilities in {', '.join(skills[:4])}. Profile matches target role {target_role}."
+        }
+
+    @classmethod
     def extract_resume_details(cls, resume_text: str, target_role: str) -> Dict[str, Any]:
         """
         Extract key details from the resume text using Gemini.
         Returns a dict containing name, key skills, experience level, and summary.
         """
+        if IS_DEMO_MODE:
+            return cls._extract_metadata_locally(resume_text, target_role)
+
         prompt = f"""
         Analyze the following resume text and extract the details in JSON format.
         Target Role: {target_role}
@@ -48,34 +121,6 @@ class AIService:
             "summary_evaluation": "A 2-3 sentence overview of the candidate's profile in relation to the target role"
         }}
         """
-        
-        if IS_DEMO_MODE:
-            # Generate mock details based on simple keyword search
-            text_lower = resume_text.lower()
-            name = "John Doe"
-            email = "johndoe@example.com"
-            # Simple keyword heuristic
-            skills = []
-            for word in ["javascript", "react", "python", "fastapi", "django", "node", "java", "sql", "aws", "docker", "c++", "css", "html", "git"]:
-                if word in text_lower:
-                    skills.append(word.capitalize() if word != "aws" and word != "sql" and word != "html" and word != "css" else word.upper())
-            
-            if not skills:
-                skills = ["Software Development", "Problem Solving", "Communication"]
-                
-            exp = "Mid-level"
-            if "senior" in text_lower or "lead" in text_lower or "manager" in text_lower:
-                exp = "Senior"
-            elif "junior" in text_lower or "intern" in text_lower or "student" in text_lower:
-                exp = "Entry-level"
-                
-            return {
-                "candidate_name": name,
-                "candidate_email": email,
-                "skills": skills[:6],
-                "experience_level": exp,
-                "summary_evaluation": f"Candidate possesses skills in {', '.join(skills[:4])}. Profile appears to match requirements for a {target_role} role."
-            }
 
         try:
             model = cls._get_model()
@@ -83,17 +128,16 @@ class AIService:
                 prompt,
                 generation_config={"response_mime_type": "application/json"}
             )
-            return json.loads(response.text)
+            data = json.loads(response.text)
+            # If the LLM failed to find name (returned 'Candidate'), try local extraction
+            if not data.get("candidate_name") or data.get("candidate_name").lower() == "candidate":
+                local_res = cls._extract_metadata_locally(resume_text, target_role)
+                data["candidate_name"] = local_res["candidate_name"]
+            return data
         except Exception as e:
             logger.error(f"Error in extract_resume_details: {str(e)}")
-            # Fallback to simple structure
-            return {
-                "candidate_name": "Candidate",
-                "candidate_email": None,
-                "skills": ["Technical Skills"],
-                "experience_level": "Mid-level",
-                "summary_evaluation": "Resume successfully uploaded. AI service encountered an API error, running on local parser."
-            }
+            # Fallback to local extraction
+            return cls._extract_metadata_locally(resume_text, target_role)
 
     @classmethod
     def generate_interview_question(
