@@ -12,9 +12,11 @@ api_key = os.getenv("GEMINI_API_KEY")
 IS_DEMO_MODE = True
 
 if api_key:
-    genai.configure(api_key=api_key)
-    IS_DEMO_MODE = False
-    logger.info("Gemini AI service successfully initialized.")
+    cleaned_key = api_key.strip().strip('"').strip("'")
+    if cleaned_key:
+        genai.configure(api_key=cleaned_key)
+        IS_DEMO_MODE = False
+        logger.info("Gemini AI service successfully initialized.")
 else:
     logger.warning("No GEMINI_API_KEY found in environment. Running in Demo Mode.")
 
@@ -24,7 +26,7 @@ class AIService:
     def _get_model():
         if IS_DEMO_MODE:
             return None
-        return genai.GenerativeModel("gemini-1.5-flash")
+        return genai.GenerativeModel("gemini-flash-latest")
 
     @classmethod
     def _extract_metadata_locally(cls, text: str, target_role: str) -> Dict[str, Any]:
