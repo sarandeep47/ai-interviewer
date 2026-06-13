@@ -222,7 +222,8 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
             session.resume_text,
             session.target_role,
             chat_history,
-            session.current_question_index
+            session.current_question_index,
+            session.candidate_name
         )
         
         next_q = ai_response.get("question")

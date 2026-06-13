@@ -101,7 +101,8 @@ class AIService:
         resume_text: str, 
         target_role: str, 
         chat_history: List[Dict[str, str]], 
-        question_index: int
+        question_index: int,
+        candidate_name: str = "Candidate"
     ) -> Dict[str, Any]:
         """
         Generates the next interview question and assesses the previous answer (if any).
@@ -115,6 +116,7 @@ class AIService:
 
         prompt = f"""
         You are a professional, technical, and friendly AI Interviewer conducting a screening for the position of: {target_role}.
+        Candidate's Name: {candidate_name}
         The candidate's resume is provided below.
         
         Candidate's Resume:
@@ -127,13 +129,18 @@ class AIService:
         {history_str}
         
         Your task is to generate the question for index {question_index} following this strict interview flow:
-        - Index 0: Introduce yourself as the AI Interviewer, welcome the candidate to the screening for the {target_role} role, and ask them to introduce themselves.
+        - Index 0: Introduce yourself as the AI Interviewer, welcome {candidate_name} to the screening for the {target_role} role, and ask them to introduce themselves.
         - Index 1: Read their introduction. If they mentioned a project in their introduction, ask probing questions about that specific project. If they did not mention a project, identify a relevant project in their resume and ask them to describe it and their contributions.
         - Index 2: Ask a question about core technical terms or concepts related to the target role (for example, if the role is related to APIs/web services, ask "What is the difference between FastAPI and REST API?", or other relevant role-specific concepts).
         - Index 3: Ask a technical question related to the job outside of their projects (e.g., testing, databases, security, performance, or system design).
-        - Index 4 (Last Question): Thank the candidate for their responses, ask if they have any final questions, and conclude with "Thank you for your time, we will get back to you."
+        - Index 4 (Last Question): Thank {candidate_name} for their responses, ask if they have any final questions, and conclude with "Thank you for your time, we will get back to you."
         
-        If the candidate just answered a question (i.e. question_index > 0), first evaluate their last response constructively in 1-2 sentences.
+        Answer Checking & Continuity Rule:
+        If question_index > 0:
+            - You MUST check the candidate's last answer against the previous question asked.
+            - Verify if their answer actually addressed the previous question. Evaluate if it was relevant, accurate, and complete.
+            - In the generated question (or evaluation), you must explicitly reference their previous answer (e.g., "Regarding your point about...", "That is a great explanation of...") to maintain high conversational continuity.
+            - If they avoided the question, gave an irrelevant answer, or provided insufficient detail, politely point it out and ask them to clarify or re-answer it before moving on.
         
         Provide your output in the following JSON format:
         {{
@@ -145,11 +152,11 @@ class AIService:
         if IS_DEMO_MODE:
             # Mock interview script matching user flow exactly
             mock_questions = [
-                f"Welcome! Let's start the mock interview for the {target_role} position. To kick things off, could you please introduce yourself and tell me a bit about your professional background?",
-                "Thank you for the introduction. Let's talk about projects. Looking at your background, could you detail a specific project you worked on that is relevant to this role, explaining your contribution?",
+                f"Welcome {candidate_name}! Let's start the mock interview for the {target_role} position. To kick things off, could you please introduce yourself and tell me a bit about your professional background?",
+                f"Thank you for the introduction, {candidate_name}. Let's talk about projects. Looking at your background, could you detail a specific project you worked on that is relevant to this role, explaining your contribution?",
                 f"Great. Let's discuss some core technical concepts. For a {target_role} position, how would you explain the difference between FastAPI and standard REST API design patterns?",
                 "Nice. Beyond project-specific details, how do you handle security, performance tuning, and unit testing when building and deploying web services?",
-                "Thank you for sharing that. We've reached the end of the interview. Do you have any questions for us? Thank you for your time, we will get back to you soon!"
+                f"Thank you for sharing that, {candidate_name}. We've reached the end of the interview. Do you have any questions for us? Thank you for your time, we will get back to you soon!"
             ]
             
             evals = [
@@ -179,11 +186,11 @@ class AIService:
             logger.error(f"Error in generate_interview_question: {str(e)}")
             # Fallback matching the current step
             fallback_questions = [
-                f"Welcome to the AI Interview for the {target_role} position. Please introduce yourself.",
+                f"Welcome {candidate_name} to the AI Interview for the {target_role} position. Please introduce yourself.",
                 "Tell me about a project on your resume that relates to this role and your exact contributions.",
                 "Could you explain some core concepts for this role, such as the difference between FastAPI and a standard REST API?",
                 "Beyond your projects, what are the best practices you follow for testing, security, and deploying software?",
-                "We have finished the interview. Do you have any questions? Thank you for your time, we will get back to you."
+                f"We have finished the interview. Do you have any questions? Thank you for your time, we will get back to you, {candidate_name}."
             ]
             q_idx = min(question_index, len(fallback_questions) - 1)
             return {
