@@ -4,12 +4,20 @@ import json
 from sqlalchemy import create_engine, Column, String, Integer, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
+from dotenv import load_dotenv
 
-# SQLite database file path in the workspace backend directory
-DB_FILE = "interview_db.db"
-DATABASE_URL = f"sqlite:///{DB_FILE}"
+# Load environment variables
+load_dotenv()
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# Read database URL, fallback to default SQLite
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///interview_db.db")
+
+# Conditionally configure connection arguments (only SQLite requires check_same_thread)
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+else:
+    engine = create_engine(DATABASE_URL)
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
