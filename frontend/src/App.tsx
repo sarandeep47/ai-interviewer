@@ -107,6 +107,7 @@ export default function App() {
   const userAnswerRef = useRef<string>('');
   const candidateNameRef = useRef<string>('');
   const activeUtteranceRef = useRef<any>(null);
+  const nudgeTriggeredRef = useRef<boolean>(false);
 
   // Update ref whenever candidateName changes to avoid stale closures in timers
   useEffect(() => {
@@ -362,21 +363,22 @@ export default function App() {
     }
   };
 
-  const handleAiSpeakingFinished = (questionIdx: number, questionText: string) => {
+  const handleAiSpeakingFinished = (questionIdx: number) => {
     if (!isVoiceMode) return;
 
     startCountdown(10, 'idle', () => {
       if (questionIdx === 0) {
-        const nudgeMessage = `Are you there, ${candidateNameRef.current || 'Candidate'}?`;
-        
-        setChatHistory(prev => [
-          ...prev,
-          { sender: 'ai', message: nudgeMessage }
-        ]);
-        
-        speakText(nudgeMessage, () => {
-          handleAiSpeakingFinished(0, questionText);
-        });
+        if (!nudgeTriggeredRef.current) {
+          nudgeTriggeredRef.current = true;
+          const nudgeMessage = `Are you there, ${candidateNameRef.current || 'Candidate'}?`;
+          
+          setChatHistory(prev => [
+            ...prev,
+            { sender: 'ai', message: nudgeMessage }
+          ]);
+          
+          speakText(nudgeMessage);
+        }
       } else {
         const skipMessage = "Okay, let's leave that question. Let's move on.";
         
@@ -608,10 +610,12 @@ export default function App() {
           { sender: 'ai', message: data.question, evaluation: data.evaluation }
         ]);
 
+        nudgeTriggeredRef.current = false;
+
         if (isVoiceMode) {
           stopCountdown();
           speakText(data.question, () => {
-            handleAiSpeakingFinished(data.question_index, data.question);
+            handleAiSpeakingFinished(data.question_index);
           });
         }
       }
@@ -1022,7 +1026,7 @@ export default function App() {
                       } else {
                         if (currentQuestion) {
                           speakText(currentQuestion, () => {
-                            handleAiSpeakingFinished(currentQuestionIndex, currentQuestion);
+                            handleAiSpeakingFinished(currentQuestionIndex);
                           });
                         }
                       }
