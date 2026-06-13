@@ -9,14 +9,14 @@ import {
   TrendingUp,
   RefreshCw,
   Check,
-  User,
   MessageSquare,
-  FileUp,
-  Mail,
   Briefcase,
   AlertCircle,
   Info,
-  Award
+  Award,
+  Volume2,
+  Mic,
+  MicOff
 } from 'lucide-react';
 import Tesseract from 'tesseract.js';
 
@@ -70,14 +70,14 @@ export default function App() {
   const [isDemoMode, setIsDemoMode] = useState<boolean>(true);
   const [targetRole, setTargetRole] = useState<string>('Software Engineer');
   const [experienceYears, setExperienceYears] = useState<number>(3);
-  const [totalQuestions, setTotalQuestions] = useState<number>(5);
+  const [totalQuestions] = useState<number>(5);
 
   // Upload states
   const [candidateName, setCandidateName] = useState<string>('');
   const [candidateEmail, setCandidateEmail] = useState<string>('');
   const [file, setFile] = useState<File | null>(null);
   const [pasteText, setPasteText] = useState<string>('');
-  const [isPasteMode, setIsPasteMode] = useState<boolean>(false);
+  const [isPasteMode] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadError, setUploadError] = useState<string>('');
 
@@ -94,6 +94,75 @@ export default function App() {
   const [userAnswer, setUserAnswer] = useState<string>('');
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState<boolean>(false);
   const [lastAnswerEvaluation, setLastAnswerEvaluation] = useState<string>('');
+
+  // Voice & Timer states
+  const [isVoiceMode, setIsVoiceMode] = useState<boolean>(true);
+  const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
+  const [isListening, setIsListening] = useState<boolean>(false);
+  const [secondsRemaining, setSecondsRemaining] = useState<number>(0);
+  const [timerType, setTimerType] = useState<'idle' | 'speech' | null>(null);
+
+  const countdownIntervalRef = useRef<any>(null);
+  const recognitionRef = useRef<any>(null);
+  const userAnswerRef = useRef<string>('');
+
+  // Update ref whenever userAnswer changes to avoid stale closures in timers
+  useEffect(() => {
+    userAnswerRef.current = userAnswer;
+  }, [userAnswer]);
+
+  // Clean up all voice activities on component unmount
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis.cancel();
+      if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {}
+      }
+    };
+  }, []);
+
+  // Initialize browser Speech Recognition
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const rec = new SpeechRecognition();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = 'en-US';
+
+      rec.onresult = (event: any) => {
+        let finalTranscript = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          }
+        }
+        if (finalTranscript) {
+          setUserAnswer(prev => {
+            const trimmed = prev.trim();
+            return trimmed ? `${trimmed} ${finalTranscript.trim()}` : finalTranscript.trim();
+          });
+        }
+      };
+
+      rec.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        if (event.error === 'not-allowed') {
+          setUploadError("Microphone permission denied. Please allow mic access.");
+          setIsListening(false);
+        }
+      };
+
+      rec.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = rec;
+    }
+  }, []);
 
   // Report states
   const [report, setReport] = useState<SessionReport | null>(null);
@@ -158,6 +227,151 @@ export default function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, currentQuestion]);
+
+  // Voice & TTS / STT helper methods
+  const startCountdown = (duration: number, type: 'idle' | 'speech', onComplete: () => void) => {
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    
+    setSecondsRemaining(duration);
+    setTimerType(type);
+
+    countdownIntervalRef.current = setInterval(() => {
+      setSecondsRemaining(prev => {
+        if (prev <= 1) {
+          clearInterval(countdownIntervalRef.current!);
+          countdownIntervalRef.current = null;
+          setTimerType(null);
+          onComplete();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const stopCountdown = () => {
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    setTimerType(null);
+    setSecondsRemaining(0);
+  };
+
+  const speakText = (text: string, onEndCallback?: () => void) => {
+    if (!isVoiceMode) {
+      if (onEndCallback) onEndCallback();
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    setIsSpeaking(true);
+
+    const cleanText = text.replace(/[*#_`]/g, '').trim();
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+
+    const voices = window.speechSynthesis.getVoices();
+    const englishVoice = voices.find(v => v.lang.startsWith('en'));
+    if (englishVoice) {
+      utterance.voice = englishVoice;
+    }
+
+    utterance.onend = () => {
+      setIsSpeaking(false);
+      if (onEndCallback) onEndCallback();
+    };
+
+    utterance.onerror = (e) => {
+      console.error("Speech synthesis error:", e);
+      setIsSpeaking(false);
+      if (onEndCallback) onEndCallback();
+    };
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const stopSpeaking = () => {
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+  };
+
+  const startListening = () => {
+    stopSpeaking();
+    stopCountdown();
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+        
+        startCountdown(15, 'speech', () => {
+          if (recognitionRef.current) {
+            try {
+              recognitionRef.current.stop();
+            } catch (e) {}
+          }
+          setIsListening(false);
+          
+          const finalAnswer = userAnswerRef.current.trim() || "Candidate did not respond.";
+          setUserAnswer('');
+          fetchNextQuestion(sessionId, finalAnswer);
+        });
+      } catch (err) {
+        console.error("Failed to start Speech Recognition:", err);
+      }
+    } else {
+      setUploadError("Speech recognition is not supported in this browser. Please use Google Chrome.");
+    }
+  };
+
+  const stopListening = () => {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
+    }
+    setIsListening(false);
+    stopCountdown();
+  };
+
+  const toggleMic = () => {
+    if (isListening) {
+      stopListening();
+    } else {
+      startListening();
+    }
+  };
+
+  const handleAiSpeakingFinished = (questionIdx: number, questionText: string) => {
+    if (!isVoiceMode) return;
+
+    startCountdown(10, 'idle', () => {
+      if (questionIdx === 0) {
+        const nudgeMessage = `Are you there, ${candidateName || 'Candidate'}?`;
+        
+        setChatHistory(prev => [
+          ...prev,
+          { sender: 'ai', message: nudgeMessage }
+        ]);
+        
+        speakText(nudgeMessage, () => {
+          handleAiSpeakingFinished(0, questionText);
+        });
+      } else {
+        const skipMessage = "Okay, let's leave that question. Let's move on.";
+        
+        setChatHistory(prev => [
+          ...prev,
+          { sender: 'ai', message: skipMessage }
+        ]);
+
+        speakText(skipMessage, () => {
+          setUserAnswer('');
+          fetchNextQuestion(sessionId, "Candidate did not respond.");
+        });
+      }
+    });
+  };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -373,6 +587,13 @@ export default function App() {
           ...prev,
           { sender: 'ai', message: data.question, evaluation: data.evaluation }
         ]);
+
+        if (isVoiceMode) {
+          stopCountdown();
+          speakText(data.question, () => {
+            handleAiSpeakingFinished(data.question_index, data.question);
+          });
+        }
       }
     } catch (err) {
       console.error(err);
@@ -384,6 +605,10 @@ export default function App() {
   const handleSendAnswer = (e: React.FormEvent) => {
     e.preventDefault();
     if (!userAnswer.trim() || isSubmittingAnswer) return;
+
+    stopSpeaking();
+    stopListening();
+    stopCountdown();
 
     const answerToSend = userAnswer.trim();
     setUserAnswer('');
@@ -406,6 +631,10 @@ export default function App() {
   };
 
   const resetInterview = () => {
+    stopSpeaking();
+    stopListening();
+    stopCountdown();
+
     setStep('upload');
     setFile(null);
     setPasteText('');
@@ -759,6 +988,92 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Voice controls panel */}
+              <div className="voice-controls-bar" style={{ margin: '0.75rem 1.5rem 0 1.5rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', width: '100%' }}>
+                  <button 
+                    type="button" 
+                    onClick={() => setIsVoiceMode(prev => {
+                      const next = !prev;
+                      if (!next) {
+                        stopSpeaking();
+                        stopListening();
+                        stopCountdown();
+                      } else {
+                        if (currentQuestion) {
+                          speakText(currentQuestion, () => {
+                            handleAiSpeakingFinished(currentQuestionIndex, currentQuestion);
+                          });
+                        }
+                      }
+                      return next;
+                    })}
+                    className={`voice-mode-toggle ${isVoiceMode ? 'active' : ''}`}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      padding: '0.4rem 0.8rem',
+                      borderRadius: '20px',
+                      border: '1px solid var(--border-color)',
+                      background: isVoiceMode ? 'rgba(139, 92, 246, 0.15)' : 'transparent',
+                      color: isVoiceMode ? '#c084fc' : 'var(--text-secondary)',
+                      cursor: 'pointer',
+                      fontSize: '0.8rem',
+                      fontWeight: 600,
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    <Volume2 size={14} />
+                    <span>{isVoiceMode ? 'Voice Mode: ON' : 'Voice Mode: OFF'}</span>
+                  </button>
+
+                  {isVoiceMode && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.8rem', flexGrow: 1, justifyContent: 'space-between' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        {isSpeaking ? (
+                          <span style={{ color: 'var(--accent-pink)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                            <span className="dot pulse" style={{ backgroundColor: 'var(--accent-pink)' }}></span>
+                            AI is speaking...
+                            <button 
+                              type="button" 
+                              onClick={stopSpeaking} 
+                              style={{ 
+                                background: 'rgba(255,255,255,0.1)', 
+                                border: 'none', 
+                                color: 'var(--text-primary)', 
+                                padding: '0.15rem 0.4rem', 
+                                borderRadius: '4px',
+                                fontSize: '0.7rem',
+                                cursor: 'pointer',
+                                marginLeft: '0.5rem'
+                              }}
+                            >
+                              Skip
+                            </button>
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-tertiary)' }}>AI Finished Speaking</span>
+                        )}
+                      </div>
+
+                      {timerType && (
+                        <span style={{ 
+                          color: timerType === 'idle' ? 'var(--warning)' : '#10b981', 
+                          fontWeight: 600,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.35rem'
+                        }}>
+                          <span className="dot pulse" style={{ backgroundColor: timerType === 'idle' ? 'var(--warning)' : '#10b981' }}></span>
+                          {timerType === 'idle' ? `Idle Nudge in: ${secondsRemaining}s` : `Recording... Time left: ${secondsRemaining}s`}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
               {/* Chat Transcript Area */}
               <div className="chat-messages">
                 {chatHistory.map((msg, index) => {
@@ -793,10 +1108,32 @@ export default function App() {
 
               {/* Chat Input */}
               <div className="chat-input-area">
-                <form onSubmit={handleSendAnswer} className="chat-input-form">
+                <form onSubmit={handleSendAnswer} className="chat-input-form" style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                  {isVoiceMode && (
+                    <button
+                      type="button"
+                      onClick={toggleMic}
+                      className={`mic-btn ${isListening ? 'active' : ''}`}
+                      disabled={isSpeaking || isSubmittingAnswer}
+                      title={isListening ? "Stop listening" : "Start speaking"}
+                      style={{
+                        width: '48px',
+                        height: '48px',
+                        borderRadius: '8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                        flexShrink: 0
+                      }}
+                    >
+                      {isListening ? <MicOff size={20} /> : <Mic size={20} />}
+                    </button>
+                  )}
                   <textarea
                     className="chat-textarea"
-                    placeholder="Type your response here..."
+                    placeholder={isListening ? "Listening... Speak your answer now." : "Type your response here..."}
                     value={userAnswer}
                     onChange={(e) => setUserAnswer(e.target.value)}
                     onKeyDown={(e) => {
