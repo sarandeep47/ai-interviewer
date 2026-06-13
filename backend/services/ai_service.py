@@ -105,11 +105,7 @@ class AIService:
     ) -> Dict[str, Any]:
         """
         Generates the next interview question and assesses the previous answer (if any).
-        Returns a dict:
-        {
-            "evaluation": "Brief feedback on previous answer (or null if first question)",
-            "question": "The next interview question"
-        }
+        Ensures a structured flow: Intro -> Project -> Concept -> Tech Q -> Closing.
         """
         # Format chat history for prompt
         history_str = ""
@@ -118,39 +114,42 @@ class AIService:
             history_str += f"{role_name}: {msg['content']}\n"
 
         prompt = f"""
-        You are a professional, technical, and friendly AI Interviewer conducting a screen for the position of: {target_role}.
+        You are a professional, technical, and friendly AI Interviewer conducting a screening for the position of: {target_role}.
         The candidate's resume is provided below.
         
         Candidate's Resume:
         {resume_text}
         
-        Current Question Number: {question_index + 1}
+        Current Question Index: {question_index} (0-indexed)
+        Total Questions: 5
         
         Here is the conversation history so far:
         {history_str}
         
-        Your task:
-        1. If the candidate just answered a question (the last message is from Candidate), evaluate their answer briefly (strengths/flaws).
-        2. Generate the next question.
-           - If question_index is 0: introduce yourself, acknowledge their background briefly, and ask the first relevant technical/behavioral question.
-           - If question_index > 0: ask a relevant follow-up or a new question testing their skills. Do not repeat previous questions.
-           - Keep the tone professional, encouraging, yet probing.
-           
+        Your task is to generate the question for index {question_index} following this strict interview flow:
+        - Index 0: Introduce yourself as the AI Interviewer, welcome the candidate to the screening for the {target_role} role, and ask them to introduce themselves.
+        - Index 1: Read their introduction. If they mentioned a project in their introduction, ask probing questions about that specific project. If they did not mention a project, identify a relevant project in their resume and ask them to describe it and their contributions.
+        - Index 2: Ask a question about core technical terms or concepts related to the target role (for example, if the role is related to APIs/web services, ask "What is the difference between FastAPI and REST API?", or other relevant role-specific concepts).
+        - Index 3: Ask a technical question related to the job outside of their projects (e.g., testing, databases, security, performance, or system design).
+        - Index 4 (Last Question): Thank the candidate for their responses, ask if they have any final questions, and conclude with "Thank you for your time, we will get back to you."
+        
+        If the candidate just answered a question (i.e. question_index > 0), first evaluate their last response constructively in 1-2 sentences.
+        
         Provide your output in the following JSON format:
         {{
-            "evaluation": "A 1-2 sentence critique of the candidate's last response (constructive, detailing what was good or what was missing). Null if this is the first question.",
-            "question": "The next interview question to ask the candidate."
+            "evaluation": "A 1-2 sentence critique of the candidate's last response (constructive, detailing what was good or what was missing). Null if this is the first question (index 0).",
+            "question": "The next interview question to ask the candidate matching the specific flow rule for index {question_index}."
         }}
         """
 
         if IS_DEMO_MODE:
-            # Mock interview script
+            # Mock interview script matching user flow exactly
             mock_questions = [
-                f"Welcome! Let's start the interview for the {target_role} position. To kick things off, could you walk me through one of the most challenging projects listed on your resume and explain your role in it?",
-                "Interesting. How did you handle technical trade-offs or constraints during that project, and what would you do differently if you built it today?",
-                "Perfect. Working in teams often involves handling disagreements about architecture or implementation details. Can you share an experience where you had a difference of opinion with a peer and how you resolved it?",
-                f"Let's dive into some tech. Given your interest in {target_role}, how do you ensure the applications you write are scalable, secure, and maintainable?",
-                "Great answer. To wrap up the interview, do you have any questions for me about the team, or is there a specific skill you wanted to highlight that we haven't covered yet?"
+                f"Welcome! Let's start the mock interview for the {target_role} position. To kick things off, could you please introduce yourself and tell me a bit about your professional background?",
+                "Thank you for the introduction. Let's talk about projects. Looking at your background, could you detail a specific project you worked on that is relevant to this role, explaining your contribution?",
+                f"Great. Let's discuss some core technical concepts. For a {target_role} position, how would you explain the difference between FastAPI and standard REST API design patterns?",
+                "Nice. Beyond project-specific details, how do you handle security, performance tuning, and unit testing when building and deploying web services?",
+                "Thank you for sharing that. We've reached the end of the interview. Do you have any questions for us? Thank you for your time, we will get back to you soon!"
             ]
             
             evals = [
@@ -178,10 +177,18 @@ class AIService:
             return json.loads(response.text)
         except Exception as e:
             logger.error(f"Error in generate_interview_question: {str(e)}")
-            # Fallback
+            # Fallback matching the current step
+            fallback_questions = [
+                f"Welcome to the AI Interview for the {target_role} position. Please introduce yourself.",
+                "Tell me about a project on your resume that relates to this role and your exact contributions.",
+                "Could you explain some core concepts for this role, such as the difference between FastAPI and a standard REST API?",
+                "Beyond your projects, what are the best practices you follow for testing, security, and deploying software?",
+                "We have finished the interview. Do you have any questions? Thank you for your time, we will get back to you."
+            ]
+            q_idx = min(question_index, len(fallback_questions) - 1)
             return {
                 "evaluation": "Good response. (AI Fallback)",
-                "question": f"Could you tell me more about how you would apply your skills to succeed as a {target_role}?"
+                "question": fallback_questions[q_idx]
             }
 
     @classmethod

@@ -9,13 +9,11 @@ import {
   TrendingUp, 
   RefreshCw, 
   Check, 
-  User, 
   MessageSquare, 
-  FileUp, 
-  Mail, 
   Briefcase,
   AlertCircle,
-  Info
+  Info,
+  Award
 } from 'lucide-react';
 import Tesseract from 'tesseract.js';
 
@@ -69,14 +67,14 @@ export default function App() {
   const [isDemoMode, setIsDemoMode] = useState<boolean>(true);
   const [targetRole, setTargetRole] = useState<string>('Software Engineer');
   const [experienceYears, setExperienceYears] = useState<number>(3);
-  const [totalQuestions, setTotalQuestions] = useState<number>(5);
+  const totalQuestions = 5;
   
   // Upload states
   const [candidateName, setCandidateName] = useState<string>('');
   const [candidateEmail, setCandidateEmail] = useState<string>('');
   const [file, setFile] = useState<File | null>(null);
   const [pasteText, setPasteText] = useState<string>('');
-  const [isPasteMode, setIsPasteMode] = useState<boolean>(false);
+  const isPasteMode = false;
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadError, setUploadError] = useState<string>('');
   
@@ -98,11 +96,30 @@ export default function App() {
   const [report, setReport] = useState<SessionReport | null>(null);
   const [isReportLoading, setIsReportLoading] = useState<boolean>(false);
 
+  // History states
+  const [pastSessions, setPastSessions] = useState<any[]>([]);
+  const [isHistoryLoading, setIsHistoryLoading] = useState<boolean>(false);
+
   // Chat scroll anchor
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Drag over state
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
+
+  const fetchPastSessions = async () => {
+    setIsHistoryLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/sessions`);
+      if (res.ok) {
+        const data = await res.json();
+        setPastSessions(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch past sessions:", err);
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  };
 
   // Check backend status and demo mode on mount
   useEffect(() => {
@@ -115,7 +132,24 @@ export default function App() {
         console.error("Failed to connect to backend:", err);
         setIsDemoMode(true); // default to demo mode if backend is down
       });
-  }, []);
+    fetchPastSessions();
+  }, [step]);
+
+  const handleViewReport = async (sid: string) => {
+    setIsReportLoading(true);
+    setStep('report');
+    try {
+      const res = await fetch(`${API_BASE}/api/sessions/${sid}/report`);
+      if (res.ok) {
+        const data = await res.json();
+        setReport(data);
+      }
+    } catch (err) {
+      console.error("Error loading report:", err);
+    } finally {
+      setIsReportLoading(false);
+    }
+  };
 
   // Scroll to bottom of chat messages
   useEffect(() => {
@@ -558,6 +592,81 @@ export default function App() {
               <p>
                 <strong>Scanned Document OCR:</strong> If you upload a scanned image or image-only PDF, the application triggers <code>tesseract.js</code> to run OCR directly in your browser. This bypasses the need for local system-level Tesseract binaries!
               </p>
+            </div>
+
+            {/* Past Interviews History (Always visible on start/front page) */}
+            <div className="glass-card" style={{ textAlign: 'left', marginTop: '1.5rem' }}>
+              <h3 style={{ fontSize: '1.2rem', marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--primary)' }}>
+                <Award size={20} /> Past Interview Reports
+              </h3>
+              {isHistoryLoading ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-secondary)' }}>
+                  <RefreshCw size={14} className="loader" />
+                  <span>Loading history...</span>
+                </div>
+              ) : pastSessions.length === 0 ? (
+                <p style={{ color: 'var(--text-tertiary)', fontStyle: 'italic', margin: 0 }}>
+                  No past interview reports found. Start an interview above to generate your first report!
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {pastSessions.map((s) => (
+                    <div 
+                      key={s.session_id} 
+                      onClick={() => handleViewReport(s.session_id)}
+                      style={{
+                        padding: '1rem',
+                        borderRadius: '8px',
+                        background: 'rgba(255, 255, 255, 0.02)',
+                        border: '1px solid var(--border-color)',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                        e.currentTarget.style.borderColor = 'var(--primary)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                        e.currentTarget.style.borderColor = 'var(--border-color)';
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem' }}>
+                        <div>
+                          <h4 style={{ fontSize: '1rem', margin: 0, color: 'var(--text-primary)' }}>{s.target_role}</h4>
+                          <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '0.2rem 0 0 0' }}>
+                            Candidate: {s.candidate_name || 'Candidate'} {s.candidate_email ? `(${s.candidate_email})` : ''}
+                          </p>
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <span style={{
+                            fontSize: '1.1rem',
+                            fontWeight: 700,
+                            color: s.final_feedback?.overall_score >= 80 ? '#10B981' : s.final_feedback?.overall_score >= 70 ? '#F59E0B' : '#EF4444'
+                          }}>
+                            Score: {s.final_feedback?.overall_score || '70'}
+                          </span>
+                          <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', margin: '0.1rem 0 0 0' }}>
+                            {new Date(s.created_at).toLocaleDateString()}
+                          </p>
+                        </div>
+                      </div>
+                      {s.final_feedback?.verdict && (
+                        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', fontSize: '0.8rem' }}>
+                          <span style={{ 
+                            padding: '0.1rem 0.4rem', 
+                            borderRadius: '4px', 
+                            background: 'rgba(255,255,255,0.06)', 
+                            color: 'var(--text-secondary)' 
+                          }}>
+                            Verdict: <strong style={{ color: 'var(--text-primary)' }}>{s.final_feedback.verdict}</strong>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

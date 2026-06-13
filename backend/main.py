@@ -258,6 +258,28 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
         logger.error(f"Error in next_question: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/sessions")
+def get_all_sessions(db: Session = Depends(get_db)):
+    """
+    Returns a list of all completed interview sessions with their final report.
+    """
+    try:
+        sessions = db.query(InterviewSession).filter(InterviewSession.status == "completed").order_by(InterviewSession.created_at.desc()).all()
+        result = []
+        for s in sessions:
+            result.append({
+                "session_id": s.id,
+                "candidate_name": s.candidate_name,
+                "candidate_email": s.candidate_email,
+                "target_role": s.target_role,
+                "created_at": s.created_at.isoformat(),
+                "final_feedback": s.final_feedback
+            })
+        return result
+    except Exception as e:
+        logger.error(f"Error in get_all_sessions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/sessions/{session_id}/report")
 def get_report(session_id: str, db: Session = Depends(get_db)):
     """
