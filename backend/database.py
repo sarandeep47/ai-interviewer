@@ -12,6 +12,10 @@ load_dotenv()
 # Read database URL, fallback to default SQLite
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///interview_db.db")
 
+# SQLAlchemy requires postgresql:// dialect prefix instead of postgres://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 # Conditionally configure connection arguments (only SQLite requires check_same_thread)
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -50,8 +54,22 @@ class ChatMessage(Base):
 
     session = relationship("InterviewSession", back_populates="messages")
 
+import logging
+logger = logging.getLogger(__name__)
+
 def init_db():
-    Base.metadata.create_all(bind=engine)
+    global engine, SessionLocal
+    try:
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database initialized successfully.")
+    except Exception as e:
+        logger.error(f"Database connection failed: {str(e)}")
+        logger.warning("Falling back to local SQLite database 'interview_db.db' for development...")
+        fallback_url = "sqlite:///interview_db.db"
+        engine = create_engine(fallback_url, connect_args={"check_same_thread": False})
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        Base.metadata.create_all(bind=engine)
+        logger.info("Local SQLite database initialized as fallback.")
 
 def get_db():
     db = SessionLocal()
@@ -59,3 +77,4 @@ def get_db():
         yield db
     finally:
         db.close()
+
