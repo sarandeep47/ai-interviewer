@@ -191,31 +191,7 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
             )
             db.add(candidate_msg)
             chat_history.append({"role": "user", "content": candidate_answer})
-            
-            # Update current question count
-            session.current_question_index += 1
             db.commit()
-            
-            # Check if interview is finished
-            if session.current_question_index >= session.total_questions:
-                # Update status to completed
-                session.status = "completed"
-                db.commit()
-                
-                # Generate final feedback
-                final_feedback = AIService.generate_final_feedback(
-                    session.resume_text,
-                    session.target_role,
-                    chat_history
-                )
-                
-                session.final_feedback = final_feedback
-                db.commit()
-                
-                return {
-                    "status": "completed",
-                    "feedback": final_feedback
-                }
 
         # Generate the next question
         ai_response = AIService.generate_interview_question(
@@ -228,6 +204,35 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
         
         next_q = ai_response.get("question")
         last_evaluation = ai_response.get("evaluation")
+        is_acceptable = ai_response.get("is_answer_acceptable", True)
+
+        # If candidate answered a previous question
+        if candidate_answer:
+            # If the answer is acceptable, advance to the next step
+            if is_acceptable:
+                session.current_question_index += 1
+                db.commit()
+                
+                # Check if interview is finished
+                if session.current_question_index >= session.total_questions:
+                    # Update status to completed
+                    session.status = "completed"
+                    db.commit()
+                    
+                    # Generate final feedback
+                    final_feedback = AIService.generate_final_feedback(
+                        session.resume_text,
+                        session.target_role,
+                        chat_history
+                    )
+                    
+                    session.final_feedback = final_feedback
+                    db.commit()
+                    
+                    return {
+                        "status": "completed",
+                        "feedback": final_feedback
+                    }
         
         # Update evaluation of previous message if available
         if last_evaluation and messages_db:

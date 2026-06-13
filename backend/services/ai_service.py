@@ -182,23 +182,26 @@ class AIService:
         {history_str}
         
         Your task is to generate the question for index {question_index} following this strict interview flow:
-        - Index 0: Introduce yourself as the AI Interviewer, welcome {candidate_name} to the screening for the {target_role} role, and ask them to introduce themselves.
+        - Index 0: Introduce yourself as the AI Interviewer, welcome the candidate by their name ({candidate_name}) to the screening for the {target_role} role, and ask them to introduce themselves.
         - Index 1: Read their introduction. If they mentioned a project in their introduction, ask probing questions about that specific project. If they did not mention a project, identify a relevant project in their resume and ask them to describe it and their contributions.
         - Index 2: Ask a question about core technical terms or concepts related to the target role (for example, if the role is related to APIs/web services, ask "What is the difference between FastAPI and REST API?", or other relevant role-specific concepts).
         - Index 3: Ask a technical question related to the job outside of their projects (e.g., testing, databases, security, performance, or system design).
         - Index 4 (Last Question): Thank {candidate_name} for their responses, ask if they have any final questions, and conclude with "Thank you for your time, we will get back to you."
         
-        Answer Checking & Continuity Rule:
-        If question_index > 0:
-            - You MUST check the candidate's last answer against the previous question asked.
-            - Verify if their answer actually addressed the previous question. Evaluate if it was relevant, accurate, and complete.
-            - In the generated question (or evaluation), you must explicitly reference their previous answer (e.g., "Regarding your point about...", "That is a great explanation of...") to maintain high conversational continuity.
-            - If they avoided the question, gave an irrelevant answer, or provided insufficient detail, politely point it out and ask them to clarify or re-answer it before moving on.
+        Answer Checking, Relevance & Continuity Rules:
+        1. Always address the candidate by their name ({candidate_name}) if known, instead of generic terms like "Candidate".
+        2. Evaluate the candidate's last message in the context of the question they were asked:
+            - Determine if their answer actually addressed the previous question. Evaluate if it was relevant and sufficient.
+            - If they avoided the question, gave an extremely brief/irrelevant answer (e.g. just saying their name or greetings when asked to introduce their background, or giving an unrelated reply), you MUST set "is_answer_acceptable" to false.
+            - If "is_answer_acceptable" is false: Do not progress to the next index flow. Instead, generate a polite follow-up "question" asking them to address the missing parts or clarify.
+            - Special Rule for "I don't know": If they state they don't know the answer ("I don't know", "i dont know", "no idea", etc.) to any question *other than the first question* (index > 0), you MUST set "is_answer_acceptable" to true, politely say "Okay, let's leave that question. Let's move on." and proceed to the next technical topic/question in the flow.
+            - Otherwise, set "is_answer_acceptable" to true.
         
         Provide your output in the following JSON format:
         {{
             "evaluation": "A 1-2 sentence critique of the candidate's last response (constructive, detailing what was good or what was missing). Null if this is the first question (index 0).",
-            "question": "The next interview question to ask the candidate matching the specific flow rule for index {question_index}."
+            "is_answer_acceptable": true/false,
+            "question": "The next question or follow-up question."
         }}
         """
 
@@ -225,6 +228,7 @@ class AIService:
             
             return {
                 "evaluation": eval_text,
+                "is_answer_acceptable": True,
                 "question": mock_questions[q_idx]
             }
 
@@ -248,6 +252,7 @@ class AIService:
             q_idx = min(question_index, len(fallback_questions) - 1)
             return {
                 "evaluation": "Good response. (AI Fallback)",
+                "is_answer_acceptable": True,
                 "question": fallback_questions[q_idx]
             }
 

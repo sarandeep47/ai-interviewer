@@ -105,6 +105,13 @@ export default function App() {
   const countdownIntervalRef = useRef<any>(null);
   const recognitionRef = useRef<any>(null);
   const userAnswerRef = useRef<string>('');
+  const candidateNameRef = useRef<string>('');
+  const activeUtteranceRef = useRef<any>(null);
+
+  // Update ref whenever candidateName changes to avoid stale closures in timers
+  useEffect(() => {
+    candidateNameRef.current = candidateName;
+  }, [candidateName]);
 
   // Update ref whenever userAnswer changes to avoid stale closures in timers
   useEffect(() => {
@@ -264,11 +271,17 @@ export default function App() {
       return;
     }
 
+    // Safely detach callback references on previous utterance to prevent duplicate trigger bugs
+    if (activeUtteranceRef.current) {
+      activeUtteranceRef.current.onend = null;
+      activeUtteranceRef.current.onerror = null;
+    }
     window.speechSynthesis.cancel();
     setIsSpeaking(true);
 
     const cleanText = text.replace(/[*#_`]/g, '').trim();
     const utterance = new SpeechSynthesisUtterance(cleanText);
+    activeUtteranceRef.current = utterance;
 
     const voices = window.speechSynthesis.getVoices();
     const englishVoice = voices.find(v => v.lang.startsWith('en'));
@@ -278,12 +291,14 @@ export default function App() {
 
     utterance.onend = () => {
       setIsSpeaking(false);
+      activeUtteranceRef.current = null;
       if (onEndCallback) onEndCallback();
     };
 
     utterance.onerror = (e) => {
       console.error("Speech synthesis error:", e);
       setIsSpeaking(false);
+      activeUtteranceRef.current = null;
       if (onEndCallback) onEndCallback();
     };
 
@@ -291,8 +306,13 @@ export default function App() {
   };
 
   const stopSpeaking = () => {
+    if (activeUtteranceRef.current) {
+      activeUtteranceRef.current.onend = null;
+      activeUtteranceRef.current.onerror = null;
+    }
     window.speechSynthesis.cancel();
     setIsSpeaking(false);
+    activeUtteranceRef.current = null;
   };
 
   const startListening = () => {
@@ -347,7 +367,7 @@ export default function App() {
 
     startCountdown(10, 'idle', () => {
       if (questionIdx === 0) {
-        const nudgeMessage = `Are you there, ${candidateName || 'Candidate'}?`;
+        const nudgeMessage = `Are you there, ${candidateNameRef.current || 'Candidate'}?`;
         
         setChatHistory(prev => [
           ...prev,
