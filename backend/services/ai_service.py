@@ -51,16 +51,23 @@ class AIService:
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         name = "Candidate"
         
-        # Skip common resume section headers
-        skip_keywords = {"resume", "cv", "curriculum", "vitae", "profile", "contact", "experience", "education", "skills", "summary", "page"}
+        # Skip common resume section headers and location words
+        skip_keywords = {
+            "resume", "cv", "curriculum", "vitae", "profile", "contact", 
+            "experience", "education", "skills", "summary", "page",
+            "gmail", "email", "github", "linkedin", "phone", "mobile", 
+            "address", "india", "tamil", "nadu", "madurai", "villapuram", 
+            "chennai", "bangalore", "hyderabad", "pune", "mumbai", "delhi", 
+            "street", "road", "city", "state", "pin", "code", "zip", "tel", "mail"
+        }
         
-        for line in lines[:5]:
+        for line in lines[:6]:
             # Keep letters and spaces
             cleaned = "".join(c for c in line if c.isalpha() or c.isspace()).strip()
             words = cleaned.split()
             
-            # Candidate name is usually 2 or 3 capitalized words
-            if 2 <= len(words) <= 4:
+            # Candidate name can be 1 to 4 words
+            if 1 <= len(words) <= 4:
                 if all(w[0].isupper() for w in words):
                     if not any(w.lower() in skip_keywords for w in words):
                         name = cleaned
