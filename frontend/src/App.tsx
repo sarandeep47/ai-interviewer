@@ -104,6 +104,7 @@ export default function App() {
   const [secondsRemaining, setSecondsRemaining] = useState<number>(0);
   const [timerType, setTimerType] = useState<'idle' | 'speech' | null>(null);
   const [flowState, setFlowState] = useState<FlowState>('AI_SPEAKING');
+  const [nudgeCount, setNudgeCount] = useState<number>(0);
 
   // Progressive UX loading states
   const [uploadStep, setUploadStep] = useState<number>(0);
@@ -144,6 +145,7 @@ export default function App() {
   const currentQuestionIndexRef = useRef<number>(0);
   const stableTranscriptRef = useRef<string>('');
   const flowStateRef = useRef<FlowState>('AI_SPEAKING');
+  const nudgeCountRef = useRef<number>(0);
 
   // Update ref whenever candidateName changes to avoid stale closures in timers
   useEffect(() => {
@@ -171,6 +173,10 @@ export default function App() {
   useEffect(() => {
     flowStateRef.current = flowState;
   }, [flowState]);
+
+  useEffect(() => {
+    nudgeCountRef.current = nudgeCount;
+  }, [nudgeCount]);
 
   // Clean up all voice activities on component unmount
   useEffect(() => {
@@ -264,14 +270,39 @@ export default function App() {
           console.log("[Voice Log] 10s idle timer expired in WAITING_FOR_MIC_CLICK.");
           const questionIdx = currentQuestionIndexRef.current;
           if (questionIdx === 0) {
-            // Q0 - Introduction is mandatory: play nudge
-            const nudgeMessage = `Are you there, ${candidateNameRef.current || 'Candidate'}?`;
+            const nextNudge = nudgeCountRef.current + 1;
+            setNudgeCount(nextNudge);
+            nudgeCountRef.current = nextNudge;
+
+            let nudgeMessage = "";
+            if (nextNudge === 1) {
+              nudgeMessage = `Are you there, ${candidateNameRef.current || 'Candidate'}?`;
+            } else if (nextNudge === 2) {
+              nudgeMessage = `Just checking again, are you there, ${candidateNameRef.current || 'Candidate'}?`;
+            } else if (nextNudge === 3) {
+              nudgeMessage = `This is the final reminder. Are you there, ${candidateNameRef.current || 'Candidate'}?`;
+            } else {
+              nudgeMessage = `It seems you are unavailable. The interview session will now be closed.`;
+            }
+
+            // Push to chat history
             setChatHistory(prev => [
               ...prev,
               { sender: 'ai', message: nudgeMessage }
             ]);
-            console.log("[Voice Log] Q0 idle: Nudging candidate.");
-            speakText(nudgeMessage);
+            console.log(`[Voice Log] Q0 idle: Nudge #${nextNudge} - "${nudgeMessage}"`);
+
+            if (nextNudge <= 3) {
+              // Play nudge and go back to waiting (the speakText callback will trigger WAITING_FOR_MIC_CLICK, restarting countdown)
+              setFlowState('AI_SPEAKING');
+              speakText(nudgeMessage);
+            } else {
+              // Play termination audio and set status to NO_SHOW
+              setFlowState('AI_SPEAKING');
+              speakText(nudgeMessage, async () => {
+                await terminateSession(sessionIdRef.current);
+              });
+            }
           } else {
             // Questions 1 to 4: Skip question
             console.log(`[Voice Log] Q${questionIdx} idle: Skipping question.`);
@@ -362,24 +393,30 @@ export default function App() {
 
   // Voice & TTS / STT helper methods
   const startCountdown = (duration: number, type: 'idle' | 'speech', onComplete: () => void) => {
-    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
     
     setSecondsRemaining(duration);
     setTimerType(type);
     console.log(`[Voice Log] Timer started: ${type}, ${duration}s`);
 
+    let timeLeft = duration;
     countdownIntervalRef.current = setInterval(() => {
-      setSecondsRemaining((prev) => {
-        if (prev <= 1) {
-          clearInterval(countdownIntervalRef.current!);
+      timeLeft -= 1;
+      setSecondsRemaining(timeLeft);
+      
+      if (timeLeft <= 0) {
+        if (countdownIntervalRef.current) {
+          clearInterval(countdownIntervalRef.current);
           countdownIntervalRef.current = null;
-          setTimerType(null);
-          console.log(`[Voice Log] Timer expired: ${type}`);
-          onComplete();
-          return 0;
         }
-        return prev - 1;
-      });
+        setTimerType(null);
+        timerTypeRef.current = null;
+        console.log(`[Voice Log] Timer expired: ${type}`);
+        onComplete();
+      }
     }, 1000);
   };
 
@@ -461,6 +498,8 @@ export default function App() {
     stableTranscriptRef.current = '';
     userAnswerRef.current = '';
     setUserAnswer('');
+    setNudgeCount(0);
+    nudgeCountRef.current = 0;
 
     setFlowState('LISTENING');
     micStartTimeRef.current = Date.now();
@@ -827,6 +866,8 @@ export default function App() {
   const fetchNextQuestion = async (sessId: string, answer: string | null) => {
     setIsSubmittingAnswer(true);
     setFlowState('PROCESSING_ANSWER');
+    setNudgeCount(0);
+    nudgeCountRef.current = 0;
     console.log("[Voice Log] Answer submitted:", answer);
     try {
       const response = await fetch(`${API_BASE}/api/sessions/${sessId}/next-question`, {
@@ -933,6 +974,23 @@ export default function App() {
     fetchNextQuestion(sessionId, answerToSend);
   };
 
+  const terminateSession = async (sessId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/sessions/${sessId}/terminate`, {
+        method: 'POST',
+      });
+      if (response.ok) {
+        setFlowState('INTERVIEW_COMPLETED');
+        setStep('report');
+        await fetchReport(sessId);
+      }
+    } catch (err) {
+      console.error("Failed to terminate session:", err);
+      setFlowState('INTERVIEW_COMPLETED');
+      setStep('report');
+    }
+  };
+
   const fetchReport = async (sessId: string) => {
     setIsReportLoading(true);
     try {
@@ -953,6 +1011,8 @@ export default function App() {
     stopListening();
     stopCountdown();
     stableTranscriptRef.current = '';
+    setNudgeCount(0);
+    nudgeCountRef.current = 0;
 
     setFlowState('AI_SPEAKING');
     setStep('upload');
@@ -1544,6 +1604,36 @@ export default function App() {
                 <RefreshCw size={48} className="loader" style={{ margin: '0 auto 1.5rem auto' }} />
                 <h2>Compiling Your Interview Evaluation Report...</h2>
                 <p className="mt-2">Generating scores, reviewing communication metrics, and structuring suggestions.</p>
+              </div>
+            ) : report && (report.status === 'no_show' || report.status === 'NO_SHOW') ? (
+              <div className="glass-card text-center" style={{ padding: '4rem 2rem' }}>
+                <AlertCircle size={64} style={{ color: 'var(--danger)', margin: '0 auto 1.5rem auto' }} />
+                <h1 style={{ fontSize: '2rem', color: 'var(--text-primary)', marginBottom: '1rem' }}>Interview Session Terminated</h1>
+                <h2 style={{ fontSize: '1.2rem', color: 'var(--danger)', marginBottom: '1.5rem' }}>Status: Candidate No-Show</h2>
+                <p style={{ maxWidth: '600px', margin: '0 auto 2rem auto', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+                  The candidate did not respond to the initial greeting and introduction question after multiple reminders. 
+                  As a result, this practice session was terminated automatically.
+                </p>
+                
+                {report.transcript && report.transcript.length > 0 && (
+                  <div style={{ textAlign: 'left', maxWidth: '600px', margin: '0 auto 2rem auto', background: 'rgba(0,0,0,0.2)', padding: '1.5rem', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                    <h3 style={{ fontSize: '1.2rem', color: 'var(--text-primary)', marginBottom: '1rem' }}>Session Transcript</h3>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '300px', overflowY: 'auto', paddingRight: '0.5rem' }}>
+                      {report.transcript.map((msg: any, idx: number) => (
+                        <div key={idx} style={{ display: 'flex', flexDirection: 'column' }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: msg.sender === 'ai' ? 'var(--primary)' : 'var(--text-secondary)' }}>
+                            {msg.sender === 'ai' ? 'AI Interviewer' : 'Candidate'}
+                          </span>
+                          <span style={{ fontSize: '0.9rem', color: 'var(--text-primary)', marginTop: '0.25rem' }}>{msg.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <button onClick={resetInterview} className="btn btn-primary" style={{ padding: '0.75rem 2rem' }}>
+                  Return to Dashboard
+                </button>
               </div>
             ) : report && report.final_feedback ? (
               <div>

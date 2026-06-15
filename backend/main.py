@@ -326,6 +326,20 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
         logger.error(f"Error in next_question: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/sessions/{session_id}/terminate")
+def terminate_session(session_id: str, db: Session = Depends(get_db)):
+    """
+    Terminates the interview session immediately as a NO_SHOW.
+    """
+    session = db.query(InterviewSession).filter(InterviewSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Interview session not found.")
+        
+    session.status = "no_show"
+    db.commit()
+    logger.info(f"[Interview Flow Log] Session {session_id} marked as NO_SHOW and terminated.")
+    return {"status": "success", "session_status": "no_show"}
+
 @app.get("/api/sessions")
 def get_all_sessions(db: Session = Depends(get_db)):
     """
