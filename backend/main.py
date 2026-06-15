@@ -1,7 +1,7 @@
 import os
 import uuid
 import logging
-from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Initialize Database
-from database import init_db, get_db, InterviewSession, ChatMessage
+from database import init_db, get_db, InterviewSession, ChatMessage, SessionLocal
 init_db()
 
 # Import Services
@@ -44,6 +44,26 @@ class StartInterviewRequest(BaseModel):
 class AnswerRequest(BaseModel):
     answer: str
 
+# Background Task for LLM Analysis
+def run_llm_analysis_background(session_id: str, resume_text: str, target_role: str):
+    db = SessionLocal()
+    try:
+        logger.info(f"[Background Analysis] Session {session_id}: Launching LLM details analysis.")
+        details = AIService.extract_resume_details(resume_text, target_role)
+        session = db.query(InterviewSession).filter(InterviewSession.id == session_id).first()
+        if session:
+            # Update candidate details with high-quality LLM-extracted metadata
+            if details.get("candidate_name") and details.get("candidate_name") != "Candidate":
+                session.candidate_name = details["candidate_name"]
+            if details.get("candidate_email"):
+                session.candidate_email = details["candidate_email"]
+            db.commit()
+            logger.info(f"[Background Analysis] Session {session_id}: Resume analysis completed. Updated name = '{session.candidate_name}'")
+    except Exception as e:
+        logger.error(f"[Background Analysis] Error in session {session_id}: {str(e)}")
+    finally:
+        db.close()
+
 # Endpoints
 
 @app.get("/")
@@ -52,6 +72,7 @@ def read_root():
 
 @app.post("/api/upload-resume")
 async def upload_resume(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     target_role: str = Form("Software Engineer"),
     total_questions: int = Form(5),
@@ -82,8 +103,8 @@ async def upload_resume(
             
         resume_text = parse_result["text"]
         
-        # Use AI service to extract key details
-        details = AIService.extract_resume_details(resume_text, target_role)
+        # Use fast local extraction first to respond instantly
+        details = AIService._extract_metadata_locally(resume_text, target_role)
         
         # Create a new session
         session_id = str(uuid.uuid4())
@@ -101,6 +122,9 @@ async def upload_resume(
         db.commit()
         db.refresh(db_session)
         
+        # Offload heavy LLM analysis to background
+        background_tasks.add_task(run_llm_analysis_background, session_id, resume_text, target_role)
+        
         return {
             "success": True,
             "session_id": session_id,
@@ -113,7 +137,11 @@ async def upload_resume(
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 @app.post("/api/start-interview")
-def start_interview(request: StartInterviewRequest, db: Session = Depends(get_db)):
+def start_interview(
+    background_tasks: BackgroundTasks,
+    request: StartInterviewRequest,
+    db: Session = Depends(get_db)
+):
     """
     Endpoint to start an interview session when resume text is sent directly
     (e.g., after client-side OCR).
@@ -121,8 +149,8 @@ def start_interview(request: StartInterviewRequest, db: Session = Depends(get_db
     try:
         session_id = str(uuid.uuid4())
         
-        # Extract skills and details using LLM if possible
-        details = AIService.extract_resume_details(request.resume_text, request.target_role)
+        # Use fast local extraction first to respond instantly
+        details = AIService._extract_metadata_locally(request.resume_text, request.target_role)
         
         db_session = InterviewSession(
             id=session_id,
@@ -137,6 +165,9 @@ def start_interview(request: StartInterviewRequest, db: Session = Depends(get_db
         db.add(db_session)
         db.commit()
         db.refresh(db_session)
+        
+        # Offload heavy LLM analysis to background
+        background_tasks.add_task(run_llm_analysis_background, session_id, request.resume_text, request.target_role)
         
         return {
             "success": True,
@@ -193,12 +224,59 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
             chat_history.append({"role": "user", "content": candidate_answer})
             db.commit()
 
+            # Check if this was the last question
+            if session.current_question_index >= session.total_questions - 1:
+                logger.info(f"[Interview Flow Log] Session {session_id}: Candidate answered the final question. Completing session.")
+                
+                # Generate concluding message
+                concluding_msg = AIService.generate_concluding_response(
+                    session.target_role,
+                    candidate_answer,
+                    session.candidate_name
+                )
+
+                # Save AI concluding message to database so it's in the transcript
+                ai_concluding_chat = ChatMessage(
+                    session_id=session_id,
+                    sender="ai",
+                    message=concluding_msg
+                )
+                db.add(ai_concluding_chat)
+                chat_history.append({"role": "ai", "content": concluding_msg})
+                db.commit()
+
+                # Update status to completed
+                session.current_question_index += 1
+                session.status = "completed"
+                db.commit()
+                
+                # Generate final feedback
+                final_feedback = AIService.generate_final_feedback(
+                    session.resume_text,
+                    session.target_role,
+                    chat_history
+                )
+                
+                session.final_feedback = final_feedback
+                db.commit()
+                
+                return {
+                    "status": "completed",
+                    "concluding_message": concluding_msg,
+                    "feedback": final_feedback
+                }
+
+        # Determine target question index to generate
+        target_idx = session.current_question_index + 1 if candidate_answer else session.current_question_index
+
+        logger.info(f"[Interview Flow Log] Session {session_id}: Current Index = {session.current_question_index}, Target Index = {target_idx}, Candidate Answer = '{candidate_answer}'")
+
         # Generate the next question
         ai_response = AIService.generate_interview_question(
             session.resume_text,
             session.target_role,
             chat_history,
-            session.current_question_index,
+            target_idx,
             session.candidate_name
         )
         
@@ -206,33 +284,17 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
         last_evaluation = ai_response.get("evaluation")
         is_acceptable = ai_response.get("is_answer_acceptable", True)
 
+        logger.info(f"[Interview Flow Log] Session {session_id}: Evaluation = '{last_evaluation}', Is Acceptable = {is_acceptable}")
+
         # If candidate answered a previous question
         if candidate_answer:
             # If the answer is acceptable, advance to the next step
             if is_acceptable:
                 session.current_question_index += 1
                 db.commit()
-                
-                # Check if interview is finished
-                if session.current_question_index >= session.total_questions:
-                    # Update status to completed
-                    session.status = "completed"
-                    db.commit()
-                    
-                    # Generate final feedback
-                    final_feedback = AIService.generate_final_feedback(
-                        session.resume_text,
-                        session.target_role,
-                        chat_history
-                    )
-                    
-                    session.final_feedback = final_feedback
-                    db.commit()
-                    
-                    return {
-                        "status": "completed",
-                        "feedback": final_feedback
-                    }
+                logger.info(f"[Interview Flow Log] Session {session_id}: Answer ACCEPTED. Index advanced to {session.current_question_index}")
+            else:
+                logger.info(f"[Interview Flow Log] Session {session_id}: Answer REJECTED. Index remains at {session.current_question_index}")
         
         # Update evaluation of previous message if available
         if last_evaluation and messages_db:

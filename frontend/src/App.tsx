@@ -22,6 +22,8 @@ import Tesseract from 'tesseract.js';
 
 const API_BASE = "http://localhost:8000";
 
+type FlowState = 'WAITING_FOR_MIC_CLICK' | 'LISTENING' | 'PROCESSING_ANSWER' | 'AI_SPEAKING' | 'QUESTION_SKIPPED' | 'INTERVIEW_COMPLETED';
+
 interface ChatMessage {
   sender: 'ai' | 'user';
   message: string;
@@ -101,6 +103,32 @@ export default function App() {
   const [isListening, setIsListening] = useState<boolean>(false);
   const [secondsRemaining, setSecondsRemaining] = useState<number>(0);
   const [timerType, setTimerType] = useState<'idle' | 'speech' | null>(null);
+  const [flowState, setFlowState] = useState<FlowState>('AI_SPEAKING');
+
+  // Progressive UX loading states
+  const [uploadStep, setUploadStep] = useState<number>(0);
+  const [thinkingStep, setThinkingStep] = useState<number>(0);
+  const THINKING_MESSAGES = [
+    "Analyzing your response...",
+    "Evaluating answer quality...",
+    "Preparing next question..."
+  ];
+
+  // Rotate AI thinking messages while submitting
+  useEffect(() => {
+    let interval: any = null;
+    if (isSubmittingAnswer) {
+      setThinkingStep(0);
+      interval = setInterval(() => {
+        setThinkingStep(prev => (prev + 1) % THINKING_MESSAGES.length);
+      }, 1500);
+    } else {
+      setThinkingStep(0);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isSubmittingAnswer]);
 
   const countdownIntervalRef = useRef<any>(null);
   const recognitionRef = useRef<any>(null);
@@ -108,6 +136,14 @@ export default function App() {
   const candidateNameRef = useRef<string>('');
   const activeUtteranceRef = useRef<any>(null);
   const nudgeTriggeredRef = useRef<boolean>(false);
+  const micStartTimeRef = useRef<number>(0);
+
+  // New refs to avoid stale closures in listeners
+  const timerTypeRef = useRef<'idle' | 'speech' | null>(null);
+  const sessionIdRef = useRef<string>('');
+  const currentQuestionIndexRef = useRef<number>(0);
+  const stableTranscriptRef = useRef<string>('');
+  const flowStateRef = useRef<FlowState>('AI_SPEAKING');
 
   // Update ref whenever candidateName changes to avoid stale closures in timers
   useEffect(() => {
@@ -118,6 +154,23 @@ export default function App() {
   useEffect(() => {
     userAnswerRef.current = userAnswer;
   }, [userAnswer]);
+
+  // Sync state values with refs to prevent stale closures in event listeners
+  useEffect(() => {
+    timerTypeRef.current = timerType;
+  }, [timerType]);
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    currentQuestionIndexRef.current = currentQuestionIndex;
+  }, [currentQuestionIndex]);
+
+  useEffect(() => {
+    flowStateRef.current = flowState;
+  }, [flowState]);
 
   // Clean up all voice activities on component unmount
   useEffect(() => {
@@ -141,18 +194,36 @@ export default function App() {
       rec.interimResults = true;
       rec.lang = 'en-US';
 
+      rec.onspeechstart = () => {
+        console.log("[Voice Log] Speech detected");
+      };
+      rec.onsoundstart = () => {
+        console.log("[Voice Log] Sound detected");
+      };
+
       rec.onresult = (event: any) => {
         let finalTranscript = '';
+        let interimTranscript = '';
+        
+        // Loop through all results to separate final and interim transcripts
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           if (event.results[i].isFinal) {
             finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
           }
         }
-        if (finalTranscript) {
-          setUserAnswer(prev => {
-            const trimmed = prev.trim();
-            return trimmed ? `${trimmed} ${finalTranscript.trim()}` : finalTranscript.trim();
+        
+        if (finalTranscript || interimTranscript) {
+          setUserAnswer(() => {
+            const combined = `${stableTranscriptRef.current} ${finalTranscript} ${interimTranscript}`;
+            return combined.replace(/\s+/g, ' ').trim();
           });
+          
+          if (finalTranscript) {
+            stableTranscriptRef.current = `${stableTranscriptRef.current} ${finalTranscript}`.replace(/\s+/g, ' ').trim();
+            userAnswerRef.current = stableTranscriptRef.current;
+          }
         }
       };
 
@@ -165,12 +236,65 @@ export default function App() {
       };
 
       rec.onend = () => {
-        setIsListening(false);
+        console.log("[Voice Log] Mic ended");
+        // If the 60-second speech timer is still active, restart the recognition!
+        if (timerTypeRef.current === 'speech' && isVoiceMode) {
+          try {
+            console.log("[Voice Log] Speech timer is active. Restarting mic to keep listening.");
+            rec.start();
+          } catch (e) {
+            // Ignore if already starting
+          }
+        } else {
+          setIsListening(false);
+        }
       };
 
       recognitionRef.current = rec;
     }
   }, []);
+
+  // Central interview flow controller hook
+  useEffect(() => {
+    console.log("[Voice Log] FlowState transitioned to:", flowState);
+    if (flowState === 'WAITING_FOR_MIC_CLICK') {
+      if (isVoiceMode) {
+        // Start 10s idle countdown (waiting for candidate to click start answering)
+        startCountdown(10, 'idle', () => {
+          console.log("[Voice Log] 10s idle timer expired in WAITING_FOR_MIC_CLICK.");
+          const questionIdx = currentQuestionIndexRef.current;
+          if (questionIdx === 0) {
+            // Q0 - Introduction is mandatory: play nudge
+            const nudgeMessage = `Are you there, ${candidateNameRef.current || 'Candidate'}?`;
+            setChatHistory(prev => [
+              ...prev,
+              { sender: 'ai', message: nudgeMessage }
+            ]);
+            console.log("[Voice Log] Q0 idle: Nudging candidate.");
+            speakText(nudgeMessage);
+          } else {
+            // Questions 1 to 4: Skip question
+            console.log(`[Voice Log] Q${questionIdx} idle: Skipping question.`);
+            const skipMessage = "Okay, let's leave that question and move on.";
+            setChatHistory(prev => [
+              ...prev,
+              { sender: 'ai', message: skipMessage }
+            ]);
+            setFlowState('QUESTION_SKIPPED');
+            speakText(skipMessage, () => {
+              setUserAnswer('');
+              fetchNextQuestion(sessionIdRef.current, "Candidate did not respond.");
+            });
+          }
+        });
+      }
+    } else if (flowState === 'LISTENING') {
+      // Handled in startListening()
+    } else {
+      // Stop any active countdown when transitioning out of WAITING_FOR_MIC_CLICK/LISTENING
+      stopCountdown();
+    }
+  }, [flowState, isVoiceMode]);
 
   // Report states
   const [report, setReport] = useState<SessionReport | null>(null);
@@ -242,13 +366,15 @@ export default function App() {
     
     setSecondsRemaining(duration);
     setTimerType(type);
+    console.log(`[Voice Log] Timer started: ${type}, ${duration}s`);
 
     countdownIntervalRef.current = setInterval(() => {
-      setSecondsRemaining(prev => {
+      setSecondsRemaining((prev) => {
         if (prev <= 1) {
           clearInterval(countdownIntervalRef.current!);
           countdownIntervalRef.current = null;
           setTimerType(null);
+          console.log(`[Voice Log] Timer expired: ${type}`);
           onComplete();
           return 0;
         }
@@ -258,10 +384,8 @@ export default function App() {
   };
 
   const stopCountdown = () => {
-    if (countdownIntervalRef.current) {
-      clearInterval(countdownIntervalRef.current);
-      countdownIntervalRef.current = null;
-    }
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+    countdownIntervalRef.current = null;
     setTimerType(null);
     setSecondsRemaining(0);
   };
@@ -281,6 +405,7 @@ export default function App() {
     setIsSpeaking(true);
 
     const cleanText = text.replace(/[*#_`]/g, '').trim();
+    console.log("[Voice Log] TTS started:", cleanText);
     const utterance = new SpeechSynthesisUtterance(cleanText);
     activeUtteranceRef.current = utterance;
 
@@ -291,16 +416,30 @@ export default function App() {
     }
 
     utterance.onend = () => {
+      console.log("[Voice Log] TTS ended");
       setIsSpeaking(false);
       activeUtteranceRef.current = null;
-      if (onEndCallback) onEndCallback();
+      if (onEndCallback) {
+        onEndCallback();
+      } else {
+        if (flowStateRef.current === 'AI_SPEAKING' || flowStateRef.current === 'QUESTION_SKIPPED') {
+          setFlowState('WAITING_FOR_MIC_CLICK');
+        }
+      }
     };
 
     utterance.onerror = (e) => {
       console.error("Speech synthesis error:", e);
+      console.log("[Voice Log] TTS ended");
       setIsSpeaking(false);
       activeUtteranceRef.current = null;
-      if (onEndCallback) onEndCallback();
+      if (onEndCallback) {
+        onEndCallback();
+      } else {
+        if (flowStateRef.current === 'AI_SPEAKING' || flowStateRef.current === 'QUESTION_SKIPPED') {
+          setFlowState('WAITING_FOR_MIC_CLICK');
+        }
+      }
     };
 
     window.speechSynthesis.speak(utterance);
@@ -319,13 +458,25 @@ export default function App() {
   const startListening = () => {
     stopSpeaking();
     stopCountdown();
+    stableTranscriptRef.current = '';
+    userAnswerRef.current = '';
+    setUserAnswer('');
+
+    setFlowState('LISTENING');
+    micStartTimeRef.current = Date.now();
+    console.log("[Voice Log] Mic started");
 
     if (recognitionRef.current) {
       try {
         recognitionRef.current.start();
         setIsListening(true);
-        
-        startCountdown(15, 'speech', () => {
+        console.log("[Voice Log] Started listening. Starting 60s response timer.");
+
+        startCountdown(60, 'speech', () => {
+          console.log("[Voice Log] Timer expired: speech");
+          setTimerType(null);
+          timerTypeRef.current = null;
+          
           if (recognitionRef.current) {
             try {
               recognitionRef.current.stop();
@@ -333,9 +484,12 @@ export default function App() {
           }
           setIsListening(false);
           
-          const finalAnswer = userAnswerRef.current.trim() || "Candidate did not respond.";
+          const finalAnswer = userAnswerRef.current.trim();
           setUserAnswer('');
-          fetchNextQuestion(sessionId, finalAnswer);
+          const answerToSubmit = finalAnswer || "Candidate did not respond.";
+          console.log("[Voice Log] Auto-submitting response after 60s timeout:", answerToSubmit);
+          setFlowState('PROCESSING_ANSWER');
+          fetchNextQuestion(sessionIdRef.current, answerToSubmit);
         });
       } catch (err) {
         console.error("Failed to start Speech Recognition:", err);
@@ -358,41 +512,113 @@ export default function App() {
   const toggleMic = () => {
     if (isListening) {
       stopListening();
+      const finalAnswer = userAnswerRef.current.trim();
+      setUserAnswer('');
+      const answerToSubmit = finalAnswer || "Candidate did not respond.";
+      console.log("[Voice Log] Manually stopped recording. Submitting:", answerToSubmit);
+      setFlowState('PROCESSING_ANSWER');
+      fetchNextQuestion(sessionIdRef.current, answerToSubmit);
     } else {
       startListening();
     }
   };
 
-  const handleAiSpeakingFinished = (questionIdx: number) => {
-    if (!isVoiceMode) return;
-
-    startCountdown(10, 'idle', () => {
-      if (questionIdx === 0) {
-        if (!nudgeTriggeredRef.current) {
-          nudgeTriggeredRef.current = true;
-          const nudgeMessage = `Are you there, ${candidateNameRef.current || 'Candidate'}?`;
-          
-          setChatHistory(prev => [
-            ...prev,
-            { sender: 'ai', message: nudgeMessage }
-          ]);
-          
-          speakText(nudgeMessage);
-        }
-      } else {
-        const skipMessage = "Okay, let's leave that question. Let's move on.";
+  const renderUploadSteps = () => {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '0.85rem',
+        maxWidth: '450px',
+        margin: '0 auto',
+        padding: '1.5rem',
+        background: 'rgba(255, 255, 255, 0.03)',
+        borderRadius: '12px',
+        border: '1px solid rgba(255, 255, 255, 0.08)',
+        textAlign: 'left'
+      }}>
+        <h3 style={{
+          color: 'var(--text-primary)',
+          fontWeight: 600,
+          fontSize: '1.05rem',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+          paddingBottom: '0.5rem',
+          marginBottom: '0.5rem',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center'
+        }}>
+          <span>Preparing Mock Interview</span>
+          <RefreshCw size={16} className="loader" style={{ color: 'var(--primary)' }} />
+        </h3>
         
-        setChatHistory(prev => [
-          ...prev,
-          { sender: 'ai', message: skipMessage }
-        ]);
+        {/* Step 1 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
+          {uploadStep >= 1 ? (
+            <span style={{ color: '#10b981', fontWeight: 600 }}>✓ Resume uploaded</span>
+          ) : (
+            <span style={{ color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span className="dot pulse" style={{ backgroundColor: 'var(--primary)' }}></span>
+              Uploading resume...
+            </span>
+          )}
+        </div>
 
-        speakText(skipMessage, () => {
-          setUserAnswer('');
-          fetchNextQuestion(sessionId, "Candidate did not respond.");
-        });
-      }
-    });
+        {/* Step 2 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
+          {uploadStep >= 2 ? (
+            <span style={{ color: '#10b981', fontWeight: 600 }}>✓ Resume extracted</span>
+          ) : uploadStep === 1 ? (
+            <span style={{ color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span className="dot pulse" style={{ backgroundColor: 'var(--primary)' }}></span>
+              Extracting resume content...
+            </span>
+          ) : (
+            <span style={{ color: 'var(--text-tertiary)' }}>⏳ Extracting resume content...</span>
+          )}
+        </div>
+
+        {/* Step 3 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
+          {uploadStep >= 3 ? (
+            <span style={{ color: '#10b981', fontWeight: 600 }}>✓ Skills identified</span>
+          ) : uploadStep === 2 ? (
+            <span style={{ color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span className="dot pulse" style={{ backgroundColor: 'var(--primary)' }}></span>
+              Identifying skills and experience...
+            </span>
+          ) : (
+            <span style={{ color: 'var(--text-tertiary)' }}>⏳ Identifying skills and experience...</span>
+          )}
+        </div>
+
+        {/* Step 4 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
+          {uploadStep >= 4 ? (
+            <span style={{ color: '#10b981', fontWeight: 600 }}>✓ Session prepared</span>
+          ) : uploadStep === 3 ? (
+            <span style={{ color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span className="dot pulse" style={{ backgroundColor: 'var(--primary)' }}></span>
+              Preparing interview session...
+            </span>
+          ) : (
+            <span style={{ color: 'var(--text-tertiary)' }}>⏳ Preparing interview session...</span>
+          )}
+        </div>
+
+        {/* Step 5 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
+          {uploadStep === 4 ? (
+            <span style={{ color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span className="dot pulse" style={{ backgroundColor: 'var(--primary)' }}></span>
+              Starting interview...
+            </span>
+          ) : (
+            <span style={{ color: 'var(--text-tertiary)' }}>⏳ Starting interview...</span>
+          )}
+        </div>
+      </div>
+    );
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -461,6 +687,11 @@ export default function App() {
 
   const startInterviewWithText = async (extractedText: string) => {
     setIsUploading(true);
+    setUploadStep(0);
+    const interval = setInterval(() => {
+      setUploadStep(prev => (prev < 3 ? prev + 1 : prev));
+    }, 1200);
+
     try {
       const response = await fetch(`${API_BASE}/api/start-interview`, {
         method: 'POST',
@@ -484,10 +715,19 @@ export default function App() {
       const data = await response.json();
       setSessionId(data.session_id);
 
-      // Successfully started session, now trigger the first question
-      await fetchNextQuestion(data.session_id, null);
+      // Clean up interval and fast-forward progressive loader steps
+      clearInterval(interval);
+      setUploadStep(3);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      setUploadStep(4);
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      // Instant transition: Change screen to 'chat' FIRST, then fetch the question in the background
       setStep('chat');
+      // Fetch the first question
+      await fetchNextQuestion(data.session_id, null);
     } catch (err: any) {
+      clearInterval(interval);
       setUploadError(err.message || 'An error occurred.');
     } finally {
       setIsUploading(false);
@@ -512,6 +752,11 @@ export default function App() {
     // 2. File Upload Mode
     if (file) {
       setIsUploading(true);
+      setUploadStep(0);
+      const interval = setInterval(() => {
+        setUploadStep(prev => (prev < 3 ? prev + 1 : prev));
+      }, 1200);
+
       const formData = new FormData();
       formData.append('file', file);
       formData.append('target_role', `${targetRole} (${experienceYears === 15 ? '15+' : experienceYears} Years Experience)`);
@@ -531,6 +776,7 @@ export default function App() {
 
         // Handle case where backend requests client side OCR (e.g. image or scanned PDF)
         if (data.status === 'client_ocr_required') {
+          clearInterval(interval);
           // If it's an image, we can run OCR immediately
           const isImage = file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(file.name);
           if (isImage) {
@@ -557,11 +803,20 @@ export default function App() {
           setCandidateEmail(data.details.candidate_email);
         }
 
+        // Clean up interval and fast-forward progressive loader steps
+        clearInterval(interval);
+        setUploadStep(3);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        setUploadStep(4);
+        await new Promise(resolve => setTimeout(resolve, 300));
+
+        // Instant transition: Change screen to 'chat' FIRST, then fetch the question in the background
+        setStep('chat');
         // Fetch the first question
         await fetchNextQuestion(data.session_id, null);
-        setStep('chat');
 
       } catch (err: any) {
+        clearInterval(interval);
         setUploadError(err.message || 'An error occurred during upload.');
       } finally {
         setIsUploading(false);
@@ -571,6 +826,8 @@ export default function App() {
 
   const fetchNextQuestion = async (sessId: string, answer: string | null) => {
     setIsSubmittingAnswer(true);
+    setFlowState('PROCESSING_ANSWER');
+    console.log("[Voice Log] Answer submitted:", answer);
     try {
       const response = await fetch(`${API_BASE}/api/sessions/${sessId}/next-question`, {
         method: 'POST',
@@ -587,9 +844,44 @@ export default function App() {
       const data = await response.json();
 
       if (data.status === 'completed') {
-        // Show report
-        setStep('report');
-        await fetchReport(sessId);
+        if (answer !== null) {
+          // Add candidate final answer to chat history
+          setChatHistory(prev => [
+            ...prev,
+            { sender: 'user', message: answer }
+          ]);
+        }
+
+        if (data.concluding_message) {
+          // Add concluding message to chat history so they see it
+          setChatHistory(prev => [
+            ...prev,
+            { sender: 'ai', message: data.concluding_message }
+          ]);
+
+          if (isVoiceMode) {
+            setFlowState('AI_SPEAKING');
+            speakText(data.concluding_message, () => {
+              // Wait a small moment after speaking before navigating to report
+              setTimeout(async () => {
+                setFlowState('INTERVIEW_COMPLETED');
+                setStep('report');
+                await fetchReport(sessId);
+              }, 1500);
+            });
+          } else {
+            setFlowState('INTERVIEW_COMPLETED');
+            // Give 3.5 seconds to read concluding response in text mode
+            setTimeout(async () => {
+              setStep('report');
+              await fetchReport(sessId);
+            }, 3500);
+          }
+        } else {
+          setFlowState('INTERVIEW_COMPLETED');
+          setStep('report');
+          await fetchReport(sessId);
+        }
       } else {
         // Ongoing chat
         if (answer !== null) {
@@ -603,6 +895,7 @@ export default function App() {
         // Add AI question
         setCurrentQuestion(data.question);
         setCurrentQuestionIndex(data.question_index);
+        console.log("[Voice Log] Question index changed:", data.question_index);
         setLastAnswerEvaluation(data.evaluation || '');
 
         setChatHistory(prev => [
@@ -614,9 +907,8 @@ export default function App() {
 
         if (isVoiceMode) {
           stopCountdown();
-          speakText(data.question, () => {
-            handleAiSpeakingFinished(data.question_index);
-          });
+          setFlowState('AI_SPEAKING');
+          speakText(data.question);
         }
       }
     } catch (err) {
@@ -633,9 +925,11 @@ export default function App() {
     stopSpeaking();
     stopListening();
     stopCountdown();
+    stableTranscriptRef.current = '';
 
     const answerToSend = userAnswer.trim();
     setUserAnswer('');
+    setFlowState('PROCESSING_ANSWER');
     fetchNextQuestion(sessionId, answerToSend);
   };
 
@@ -658,7 +952,9 @@ export default function App() {
     stopSpeaking();
     stopListening();
     stopCountdown();
+    stableTranscriptRef.current = '';
 
+    setFlowState('AI_SPEAKING');
     setStep('upload');
     setFile(null);
     setPasteText('');
@@ -707,135 +1003,139 @@ export default function App() {
             </div>
 
             <div className="glass-card">
-              <form onSubmit={handleUploadSubmit}>
+              {isUploading ? (
+                renderUploadSteps()
+              ) : (
+                <form onSubmit={handleUploadSubmit}>
 
-                {/* Meta details */}
-                <div className="grid-2 mb-2">
-                  <div className="form-group">
-                    <label className="form-label flex-gap-2">
-                      <Briefcase size={16} /> Target Job Role
-                    </label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      placeholder="e.g. Software Engineer, React Developer"
-                      value={targetRole}
-                      onChange={(e) => setTargetRole(e.target.value)}
-                      required
-                    />
-                  </div>
+                  {/* Meta details */}
+                  <div className="grid-2 mb-2">
+                    <div className="form-group">
+                      <label className="form-label flex-gap-2">
+                        <Briefcase size={16} /> Target Job Role
+                      </label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        placeholder="e.g. Software Engineer, React Developer"
+                        value={targetRole}
+                        onChange={(e) => setTargetRole(e.target.value)}
+                        required
+                      />
+                    </div>
 
-                  <div className="form-group">
-                    <label className="form-label">
-                      Years of Experience: <strong style={{ color: 'var(--primary)' }}>{experienceYears === 15 ? '15+ Years' : `${experienceYears} Years`}</strong>
-                    </label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="15"
-                      value={experienceYears}
-                      onChange={(e) => setExperienceYears(Number(e.target.value))}
-                      className="form-input"
-                      style={{ padding: '0.25rem', height: 'auto', background: 'transparent' }}
-                    />
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-                      <span>0 Years</span>
-                      <span>5 Years</span>
-                      <span>10 Years</span>
-                      <span>15+ Years</span>
+                    <div className="form-group">
+                      <label className="form-label">
+                        Years of Experience: <strong style={{ color: 'var(--primary)' }}>{experienceYears === 15 ? '15+ Years' : `${experienceYears} Years`}</strong>
+                      </label>
+                      <input
+                        type="range"
+                        min="0"
+                        max="15"
+                        value={experienceYears}
+                        onChange={(e) => setExperienceYears(Number(e.target.value))}
+                        className="form-input"
+                        style={{ padding: '0.25rem', height: 'auto', background: 'transparent' }}
+                      />
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                        <span>0 Years</span>
+                        <span>5 Years</span>
+                        <span>10 Years</span>
+                        <span>15+ Years</span>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div
-                  className={`upload-zone ${isDragOver ? 'dragover' : ''}`}
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  onClick={() => document.getElementById('resume-file-input')?.click()}
-                  style={{ marginTop: '1.5rem' }}
-                >
-                  <input
-                    type="file"
-                    id="resume-file-input"
-                    style={{ display: 'none' }}
-                    accept=".pdf,.png,.jpg,.jpeg,.webp"
-                    onChange={handleFileChange}
-                  />
+                  <div
+                    className={`upload-zone ${isDragOver ? 'dragover' : ''}`}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    onClick={() => document.getElementById('resume-file-input')?.click()}
+                    style={{ marginTop: '1.5rem' }}
+                  >
+                    <input
+                      type="file"
+                      id="resume-file-input"
+                      style={{ display: 'none' }}
+                      accept=".pdf,.png,.jpg,.jpeg,.webp"
+                      onChange={handleFileChange}
+                    />
 
-                  <div className="upload-icon">
-                    <Upload size={32} />
-                  </div>
-                  {file ? (
-                    <div>
-                      <p style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{file.name}</p>
-                      <p style={{ fontSize: '0.85rem' }}>{(file.size / (1024 * 1024)).toFixed(2)} MB • Click to replace</p>
+                    <div className="upload-icon">
+                      <Upload size={32} />
                     </div>
-                  ) : (
-                    <div>
-                      <p style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Drag and drop your resume here</p>
-                      <p style={{ fontSize: '0.85rem' }}>Supports PDF, PNG, JPG, JPEG, WEBP</p>
+                    {file ? (
+                      <div>
+                        <p style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{file.name}</p>
+                        <p style={{ fontSize: '0.85rem' }}>{(file.size / (1024 * 1024)).toFixed(2)} MB • Click to replace</p>
+                      </div>
+                    ) : (
+                      <div>
+                        <p style={{ color: 'var(--text-primary)', fontWeight: 600 }}>Drag and drop your resume here</p>
+                        <p style={{ fontSize: '0.85rem' }}>Supports PDF, PNG, JPG, JPEG, WEBP</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Error message */}
+                  {uploadError && (
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '0.5rem',
+                      color: 'var(--danger)',
+                      background: 'var(--danger-bg)',
+                      padding: '1rem',
+                      borderRadius: '8px',
+                      marginTop: '1.5rem',
+                      fontSize: '0.9rem',
+                      textAlign: 'left'
+                    }}>
+                      <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '0.1rem' }} />
+                      <span>{uploadError}</span>
                     </div>
                   )}
-                </div>
 
-                {/* Error message */}
-                {uploadError && (
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: '0.5rem',
-                    color: 'var(--danger)',
-                    background: 'var(--danger-bg)',
-                    padding: '1rem',
-                    borderRadius: '8px',
-                    marginTop: '1.5rem',
-                    fontSize: '0.9rem',
-                    textAlign: 'left'
-                  }}>
-                    <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '0.1rem' }} />
-                    <span>{uploadError}</span>
-                  </div>
-                )}
-
-                {/* Client Side OCR Progress */}
-                {isOcrLoading && (
-                  <div className="ocr-progress-container">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', fontWeight: 500 }}>
-                      <span className="flex-gap-2">
-                        <RefreshCw size={14} className="loader" /> {ocrStatus}
-                      </span>
-                      <span>{ocrProgress}%</span>
+                  {/* Client Side OCR Progress */}
+                  {isOcrLoading && (
+                    <div className="ocr-progress-container">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.9rem', fontWeight: 500 }}>
+                        <span className="flex-gap-2">
+                          <RefreshCw size={14} className="loader" /> {ocrStatus}
+                        </span>
+                        <span>{ocrProgress}%</span>
+                      </div>
+                      <div className="progress-bar-bg">
+                        <div className="progress-bar-fill" style={{ width: `${ocrProgress}%` }}></div>
+                      </div>
                     </div>
-                    <div className="progress-bar-bg">
-                      <div className="progress-bar-fill" style={{ width: `${ocrProgress}%` }}></div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Submit button */}
-                <button
-                  type="submit"
-                  className="btn btn-primary mt-3"
-                  style={{ width: '100%', padding: '0.9rem' }}
-                  disabled={isUploading || isOcrLoading || !file}
-                >
-                  {isUploading ? (
-                    <>
-                      <RefreshCw size={18} className="loader" />
-                      <span>Analyzing Resume & Launching Session...</span>
-                    </>
-                  ) : isOcrLoading ? (
-                    <span>Running In-Browser OCR scanning...</span>
-                  ) : (
-                    <>
-                      <Sparkles size={18} />
-                      <span>Start Mock Interview</span>
-                    </>
                   )}
-                </button>
 
-              </form>
+                  {/* Submit button */}
+                  <button
+                    type="submit"
+                    className="btn btn-primary mt-3"
+                    style={{ width: '100%', padding: '0.9rem' }}
+                    disabled={isUploading || isOcrLoading || !file}
+                  >
+                    {isUploading ? (
+                      <>
+                        <RefreshCw size={18} className="loader" />
+                        <span>Analyzing Resume & Launching Session...</span>
+                      </>
+                    ) : isOcrLoading ? (
+                      <span>Running In-Browser OCR scanning...</span>
+                    ) : (
+                      <>
+                        <Sparkles size={18} />
+                        <span>Start Mock Interview</span>
+                      </>
+                    )}
+                  </button>
+
+                </form>
+              )}
             </div>
 
             <div style={{ marginTop: '2rem', textAlign: 'left', opacity: 0.75, fontSize: '0.85rem' }} className="glass-card">
@@ -942,7 +1242,29 @@ export default function App() {
                   </div>
                   <div>
                     <h3 style={{ marginBottom: '0.25rem' }}>AI Interviewer</h3>
-                    <div className="status-label">Active Session</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.2rem' }}>
+                      <span className="status-label">Active Session</span>
+                      <span style={{
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        padding: '0.1rem 0.4rem',
+                        borderRadius: '4px',
+                        background: flowState === 'LISTENING' ? 'rgba(16, 185, 129, 0.15)' :
+                                    flowState === 'PROCESSING_ANSWER' ? 'rgba(245, 158, 11, 0.15)' :
+                                    flowState === 'AI_SPEAKING' ? 'rgba(139, 92, 246, 0.15)' :
+                                    flowState === 'WAITING_FOR_MIC_CLICK' ? 'rgba(59, 130, 246, 0.15)' :
+                                    flowState === 'QUESTION_SKIPPED' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(255, 255, 255, 0.15)',
+                        color: flowState === 'LISTENING' ? '#10B981' :
+                               flowState === 'PROCESSING_ANSWER' ? '#F59E0B' :
+                               flowState === 'AI_SPEAKING' ? '#A78BFA' :
+                               flowState === 'WAITING_FOR_MIC_CLICK' ? '#60A5FA' :
+                               flowState === 'QUESTION_SKIPPED' ? '#F87171' : 'var(--text-secondary)',
+                        border: '1px solid currentColor',
+                        whiteSpace: 'nowrap'
+                      }}>
+                        {flowState.replace(/_/g, ' ')}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -1025,9 +1347,8 @@ export default function App() {
                         stopCountdown();
                       } else {
                         if (currentQuestion) {
-                          speakText(currentQuestion, () => {
-                            handleAiSpeakingFinished(currentQuestionIndex);
-                          });
+                          setFlowState('AI_SPEAKING');
+                          speakText(currentQuestion);
                         }
                       }
                       return next;
@@ -1090,7 +1411,9 @@ export default function App() {
                           gap: '0.35rem'
                         }}>
                           <span className="dot pulse" style={{ backgroundColor: timerType === 'idle' ? 'var(--warning)' : '#10b981' }}></span>
-                          {timerType === 'idle' ? `Idle Nudge in: ${secondsRemaining}s` : `Recording... Time left: ${secondsRemaining}s`}
+                          {timerType === 'idle' ? 
+                            (currentQuestionIndex === 0 ? `Please start answering: ${secondsRemaining}s` : `Time to start answering: ${secondsRemaining}s (or skip)`) : 
+                            `Recording... Time left: ${secondsRemaining}s`}
                         </span>
                       )}
                     </div>
@@ -1123,7 +1446,9 @@ export default function App() {
                       <span></span>
                       <span></span>
                     </div>
-                    <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>AI is evaluating and preparing question...</span>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>
+                      {THINKING_MESSAGES[thinkingStep]}
+                    </span>
                   </div>
                 )}
 
@@ -1153,6 +1478,33 @@ export default function App() {
                       }}
                     >
                       {isListening ? <MicOff size={20} /> : <Mic size={20} />}
+                    </button>
+                  )}
+                  {isVoiceMode && flowState === 'WAITING_FOR_MIC_CLICK' && (
+                    <button
+                      type="button"
+                      onClick={startListening}
+                      className="start-answering-btn animate-pulse"
+                      style={{
+                        padding: '0 1.2rem',
+                        height: '48px',
+                        borderRadius: '8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        fontSize: '0.9rem',
+                        fontWeight: 600,
+                        background: 'var(--primary)',
+                        border: 'none',
+                        color: 'white',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        boxShadow: '0 0 12px rgba(139, 92, 246, 0.3)',
+                        flexShrink: 0
+                      }}
+                    >
+                      <Mic size={16} />
+                      <span>Start Answering</span>
                     </button>
                   )}
                   <textarea
