@@ -39,7 +39,7 @@ class StartInterviewRequest(BaseModel):
     candidate_email: str
     target_role: str
     resume_text: str
-    total_questions: int = 5
+    total_questions: int = 8
 
 class AnswerRequest(BaseModel):
     answer: str
@@ -57,6 +57,10 @@ def run_llm_analysis_background(session_id: str, resume_text: str, target_role: 
                 session.candidate_name = details["candidate_name"]
             if details.get("candidate_email"):
                 session.candidate_email = details["candidate_email"]
+            session.experience_level = details.get("experience_level")
+            skills_list = details.get("skills", [])
+            session.skills = ", ".join(skills_list) if isinstance(skills_list, list) else str(skills_list)
+            session.resume_summary = details.get("summary_evaluation")
             db.commit()
             logger.info(f"[Background Analysis] Session {session_id}: Resume analysis completed. Updated name = '{session.candidate_name}'")
     except Exception as e:
@@ -75,7 +79,7 @@ async def upload_resume(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     target_role: str = Form("Software Engineer"),
-    total_questions: int = Form(5),
+    total_questions: int = Form(8),
     db: Session = Depends(get_db)
 ):
     """
@@ -116,7 +120,10 @@ async def upload_resume(
             resume_text=resume_text,
             current_question_index=0,
             total_questions=total_questions,
-            status="started"
+            status="started",
+            experience_level=details.get("experience_level"),
+            skills=", ".join(details.get("skills", [])) if isinstance(details.get("skills"), list) else str(details.get("skills")),
+            resume_summary=details.get("summary_evaluation")
         )
         db.add(db_session)
         db.commit()
@@ -160,7 +167,10 @@ def start_interview(
             resume_text=request.resume_text,
             current_question_index=0,
             total_questions=request.total_questions,
-            status="started"
+            status="started",
+            experience_level=details.get("experience_level"),
+            skills=", ".join(details.get("skills", [])) if isinstance(details.get("skills"), list) else str(details.get("skills")),
+            resume_summary=details.get("summary_evaluation")
         )
         db.add(db_session)
         db.commit()
@@ -178,6 +188,36 @@ def start_interview(
     except Exception as e:
         logger.error(f"Error in start_interview: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """
+    Transcribes an uploaded audio file using Groq's Whisper Large V3.
+    """
+    if not file:
+        raise HTTPException(status_code=400, detail="No audio file uploaded.")
+    
+    import tempfile
+    import os
+    
+    suffix = os.path.splitext(file.filename)[1] or ".webm"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        content = await file.read()
+        temp_file.write(content)
+        temp_file_path = temp_file.name
+        
+    try:
+        transcript_text = AIService.transcribe_audio(temp_file_path)
+        return {"transcript": transcript_text}
+    except Exception as e:
+        logger.error(f"Error in transcribe_audio: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception:
+                pass
 
 @app.post("/api/sessions/{session_id}/next-question")
 def next_question(session_id: str, payload: AnswerRequest = None, db: Session = Depends(get_db)):
@@ -210,22 +250,34 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
             })
             
         candidate_answer = payload.answer if payload else ""
-        last_evaluation = None
+        evaluation = None
+        is_clarification = False
+        
+        # Load previous AI questions for history/similarity/topic checking
+        previous_ai_messages = [
+            {
+                "question": m.message,
+                "topic": m.topic,
+                "intent": m.intent,
+                "status": m.status
+            }
+            for m in messages_db if m.sender == "ai" and m.topic is not None
+        ]
         
         # If candidate answered a previous question
         if candidate_answer:
-            # 1. Save candidate's response
-            candidate_msg = ChatMessage(
-                session_id=session_id,
-                sender="user",
-                message=candidate_answer
-            )
-            db.add(candidate_msg)
-            chat_history.append({"role": "user", "content": candidate_answer})
-            db.commit()
-
             # Check if this was the last question
             if session.current_question_index >= session.total_questions - 1:
+                # 1. Save final candidate response
+                candidate_msg = ChatMessage(
+                    session_id=session_id,
+                    sender="user",
+                    message=candidate_answer
+                )
+                db.add(candidate_msg)
+                chat_history.append({"role": "user", "content": candidate_answer})
+                db.commit()
+
                 logger.info(f"[Interview Flow Log] Session {session_id}: Candidate answered the final question. Completing session.")
                 
                 # Generate concluding message
@@ -265,52 +317,104 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
                     "concluding_message": concluding_msg,
                     "feedback": final_feedback
                 }
+            else:
+                # Technical question relevance check
+                # Find the last AI question asked
+                last_ai_msg = db.query(ChatMessage).filter(
+                    ChatMessage.session_id == session_id,
+                    ChatMessage.sender == "ai"
+                ).order_by(ChatMessage.timestamp.desc()).first()
+                
+                eval_res = AIService.evaluate_candidate_answer(
+                    question_text=last_ai_msg.message if last_ai_msg else "",
+                    candidate_answer=candidate_answer,
+                    target_role=session.target_role
+                )
+                answer_status = eval_res.get("answer_status", "ANSWERED")
+                evaluation = eval_res.get("evaluation")
+                
+                # Save candidate's response with evaluation
+                candidate_msg = ChatMessage(
+                    session_id=session_id,
+                    sender="user",
+                    message=candidate_answer,
+                    evaluation=evaluation
+                )
+                db.add(candidate_msg)
+                chat_history.append({"role": "user", "content": candidate_answer})
+                db.commit()
+                
+                is_acceptable = True
+                if last_ai_msg:
+                    last_ai_msg.status = "SKIPPED" if answer_status in ["SKIPPED", "I_DONT_KNOW"] else ("ANSWERED" if answer_status == "ANSWERED" else "IRRELEVANT")
+                    last_ai_msg.evaluation = evaluation
+                    
+                    if answer_status == "IRRELEVANT":
+                        current_clarifications = last_ai_msg.clarification_count or 0
+                        if current_clarifications < 1:
+                            last_ai_msg.clarification_count = current_clarifications + 1
+                            is_acceptable = False
+                            is_clarification = True
+                            logger.info(f"[Interview Flow Log] Session {session_id}: Irrelevant answer. Clarification attempt 1.")
+                        else:
+                            last_ai_msg.status = "SKIPPED"
+                            is_acceptable = True
+                            logger.info(f"[Interview Flow Log] Session {session_id}: Already clarified. Moving on.")
+                    db.commit()
+                
+                if is_acceptable:
+                    session.current_question_index += 1
+                    db.commit()
+                    
+                # Re-fetch history to include the candidate's message just added
+                messages_db = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(ChatMessage.timestamp.asc()).all()
+                # Re-map history for LLM
+                chat_history = []
+                for m in messages_db:
+                    chat_history.append({
+                        "role": m.sender,
+                        "content": m.message
+                    })
+                # Re-compile previous questions list to include updated status
+                previous_ai_messages = [
+                    {
+                        "question": m.message,
+                        "topic": m.topic,
+                        "intent": m.intent,
+                        "status": m.status
+                    }
+                    for m in messages_db if m.sender == "ai" and m.topic is not None
+                ]
 
-        # Determine target question index to generate
-        target_idx = session.current_question_index + 1 if candidate_answer else session.current_question_index
-
-        logger.info(f"[Interview Flow Log] Session {session_id}: Current Index = {session.current_question_index}, Target Index = {target_idx}, Candidate Answer = '{candidate_answer}'")
+        logger.info(f"[Interview Flow Log] Session {session_id}: Current Index = {session.current_question_index}, Candidate Answer = '{candidate_answer}', Is Clarification = {is_clarification}")
 
         # Generate the next question
         ai_response = AIService.generate_interview_question(
-            session.resume_text,
-            session.target_role,
-            chat_history,
-            target_idx,
-            session.candidate_name
+            resume_text=session.resume_text,
+            target_role=session.target_role,
+            chat_history=chat_history,
+            question_index=session.current_question_index,
+            candidate_name=session.candidate_name,
+            skills=session.skills,
+            experience_level=session.experience_level,
+            resume_summary=session.resume_summary,
+            previous_questions=previous_ai_messages,
+            is_clarification=is_clarification
         )
         
         next_q = ai_response.get("question")
-        last_evaluation = ai_response.get("evaluation")
-        is_acceptable = ai_response.get("is_answer_acceptable", True)
-
-        logger.info(f"[Interview Flow Log] Session {session_id}: Evaluation = '{last_evaluation}', Is Acceptable = {is_acceptable}")
-
-        # If candidate answered a previous question
-        if candidate_answer:
-            # If the answer is acceptable, advance to the next step
-            if is_acceptable:
-                session.current_question_index += 1
-                db.commit()
-                logger.info(f"[Interview Flow Log] Session {session_id}: Answer ACCEPTED. Index advanced to {session.current_question_index}")
-            else:
-                logger.info(f"[Interview Flow Log] Session {session_id}: Answer REJECTED. Index remains at {session.current_question_index}")
-        
-        # Update evaluation of previous message if available
-        if last_evaluation and messages_db:
-            # The last candidate message would be the one we just added or the last in list
-            last_candidate_msg = db.query(ChatMessage).filter(
-                ChatMessage.session_id == session_id, ChatMessage.sender == "user"
-            ).order_by(ChatMessage.timestamp.desc()).first()
-            if last_candidate_msg:
-                last_candidate_msg.evaluation = last_evaluation
-                db.commit()
+        next_topic = ai_response.get("topic")
+        next_intent = ai_response.get("intent")
 
         # Save the AI's question in the database
         ai_msg = ChatMessage(
             session_id=session_id,
             sender="ai",
-            message=next_q
+            message=next_q,
+            topic=next_topic,
+            intent=next_intent,
+            status="PENDING",
+            clarification_count=0
         )
         db.add(ai_msg)
         db.commit()
@@ -318,7 +422,7 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
         return {
             "status": "ongoing",
             "question": next_q,
-            "evaluation": last_evaluation,
+            "evaluation": evaluation,
             "question_index": session.current_question_index
         }
         
@@ -391,3 +495,26 @@ def get_report(session_id: str, db: Session = Depends(get_db)):
         "final_feedback": session.final_feedback,
         "transcript": transcript
     }
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id: str, db: Session = Depends(get_db)):
+    """
+    Deletes an interview session and its associated chat messages from the database.
+    """
+    session = db.query(InterviewSession).filter(InterviewSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Interview session not found.")
+    
+    try:
+        # Delete associated chat messages first due to foreign keys
+        db.query(ChatMessage).filter(ChatMessage.session_id == session_id).delete()
+        # Delete the session
+        db.delete(session)
+        db.commit()
+        logger.info(f"[DB Log] Session {session_id} successfully deleted from history.")
+        return {"status": "success", "message": f"Session {session_id} successfully deleted."}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting session {session_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+

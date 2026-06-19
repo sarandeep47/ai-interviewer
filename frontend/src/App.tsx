@@ -16,7 +16,8 @@ import {
   Award,
   Volume2,
   Mic,
-  MicOff
+  MicOff,
+  Trash2
 } from 'lucide-react';
 import Tesseract from 'tesseract.js';
 
@@ -69,10 +70,12 @@ export default function App() {
   const [step, setStep] = useState<'upload' | 'chat' | 'report'>('upload');
 
   // App config states
-  const [isDemoMode, setIsDemoMode] = useState<boolean>(true);
   const [targetRole, setTargetRole] = useState<string>('Software Engineer');
   const [experienceYears, setExperienceYears] = useState<number>(3);
-  const [totalQuestions] = useState<number>(5);
+  const [totalQuestions] = useState<number>(8);
+  const [speechLanguage, setSpeechLanguage] = useState<string>('en-IN');
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   // Upload states
   const [candidateName, setCandidateName] = useState<string>('');
@@ -211,25 +214,19 @@ export default function App() {
         let finalTranscript = '';
         let interimTranscript = '';
         
-        // Loop through all results to separate final and interim transcripts
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript;
+        for (let i = 0; i < event.results.length; ++i) {
+          const resItem = event.results[i];
+          if (resItem.isFinal) {
+            finalTranscript += resItem[0].transcript + ' ';
           } else {
-            interimTranscript += event.results[i][0].transcript;
+            interimTranscript += resItem[0].transcript + ' ';
           }
         }
         
-        if (finalTranscript || interimTranscript) {
-          setUserAnswer(() => {
-            const combined = `${stableTranscriptRef.current} ${finalTranscript} ${interimTranscript}`;
-            return combined.replace(/\s+/g, ' ').trim();
-          });
-          
-          if (finalTranscript) {
-            stableTranscriptRef.current = `${stableTranscriptRef.current} ${finalTranscript}`.replace(/\s+/g, ' ').trim();
-            userAnswerRef.current = stableTranscriptRef.current;
-          }
+        const combined = `${finalTranscript}${interimTranscript}`.replace(/\s+/g, ' ').trim();
+        if (combined) {
+          setUserAnswer(combined);
+          userAnswerRef.current = finalTranscript.replace(/\s+/g, ' ').trim();
         }
       };
 
@@ -356,17 +353,8 @@ export default function App() {
     }
   };
 
-  // Check backend status and demo mode on mount
+  // Load past session history on mount and screen transitions
   useEffect(() => {
-    fetch(`${API_BASE}/`)
-      .then(res => res.json())
-      .then(data => {
-        setIsDemoMode(data.demo_mode);
-      })
-      .catch(err => {
-        console.error("Failed to connect to backend:", err);
-        setIsDemoMode(true); // default to demo mode if backend is down
-      });
     fetchPastSessions();
   }, [step]);
 
@@ -383,6 +371,26 @@ export default function App() {
       console.error("Error loading report:", err);
     } finally {
       setIsReportLoading(false);
+    }
+  };
+
+  const handleDeleteSession = async (sid: string) => {
+    if (!window.confirm("Are you sure you want to delete this interview report?")) {
+      return;
+    }
+    try {
+      const res = await fetch(`${API_BASE}/api/sessions/${sid}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        console.log(`[DB Log] Session ${sid} deleted successfully.`);
+        fetchPastSessions();
+      } else {
+        alert("Failed to delete the report.");
+      }
+    } catch (err) {
+      console.error("Error deleting session:", err);
+      alert("Error deleting session.");
     }
   };
 
@@ -505,11 +513,41 @@ export default function App() {
     micStartTimeRef.current = Date.now();
     console.log("[Voice Log] Mic started");
 
+    // Initialize MediaRecorder for Whisper audio capture
+    audioChunksRef.current = [];
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+          const options = { mimeType: 'audio/webm' };
+          let recorder: MediaRecorder;
+          try {
+            recorder = new MediaRecorder(stream, options);
+          } catch (e) {
+            recorder = new MediaRecorder(stream);
+          }
+          mediaRecorderRef.current = recorder;
+          
+          recorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+              audioChunksRef.current.push(event.data);
+            }
+          };
+          
+          recorder.start();
+          console.log("[Audio Recorder] MediaRecorder successfully started.");
+        })
+        .catch(err => {
+          console.error("Failed to acquire microphone for high-fidelity audio capture:", err);
+        });
+    }
+
     if (recognitionRef.current) {
       try {
+        // Dynamically apply selected language accent
+        recognitionRef.current.lang = speechLanguage;
         recognitionRef.current.start();
         setIsListening(true);
-        console.log("[Voice Log] Started listening. Starting 60s response timer.");
+        console.log(`[Voice Log] Started browser SpeechRecognition in ${speechLanguage}. Starting 60s timer.`);
 
         startCountdown(60, 'speech', () => {
           console.log("[Voice Log] Timer expired: speech");
@@ -522,13 +560,43 @@ export default function App() {
             } catch (e) {}
           }
           setIsListening(false);
+
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            try {
+              mediaRecorderRef.current.stop();
+              mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+            } catch (e) {}
+          }
           
-          const finalAnswer = userAnswerRef.current.trim();
-          setUserAnswer('');
-          const answerToSubmit = finalAnswer || "Candidate did not respond.";
-          console.log("[Voice Log] Auto-submitting response after 60s timeout:", answerToSubmit);
           setFlowState('PROCESSING_ANSWER');
-          fetchNextQuestion(sessionIdRef.current, answerToSubmit);
+          
+          setTimeout(async () => {
+            let finalAnswer = userAnswerRef.current.trim();
+            if (audioChunksRef.current.length > 0) {
+              try {
+                const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current?.mimeType || 'audio/webm' });
+                if (audioBlob.size > 100) {
+                  const formData = new FormData();
+                  formData.append('file', audioBlob, 'recording.webm');
+                  const transcribeRes = await fetch(`${API_BASE}/api/transcribe`, {
+                    method: 'POST',
+                    body: formData
+                  });
+                  if (transcribeRes.ok) {
+                    const data = await transcribeRes.json();
+                    if (data.transcript && data.transcript.trim()) {
+                      finalAnswer = data.transcript.trim();
+                    }
+                  }
+                }
+              } catch (e) {
+                console.error("Error auto-transcribing via Whisper:", e);
+              }
+            }
+            setUserAnswer('');
+            const answerToSubmit = finalAnswer || "Candidate did not respond.";
+            fetchNextQuestion(sessionIdRef.current, answerToSubmit);
+          }, 400);
         });
       } catch (err) {
         console.error("Failed to start Speech Recognition:", err);
@@ -545,18 +613,58 @@ export default function App() {
       } catch (e) {}
     }
     setIsListening(false);
+    
+    // Stop MediaRecorder
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+        mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      } catch (e) {
+        console.error("Error stopping MediaRecorder:", e);
+      }
+    }
     stopCountdown();
   };
 
   const toggleMic = () => {
     if (isListening) {
       stopListening();
-      const finalAnswer = userAnswerRef.current.trim();
-      setUserAnswer('');
-      const answerToSubmit = finalAnswer || "Candidate did not respond.";
-      console.log("[Voice Log] Manually stopped recording. Submitting:", answerToSubmit);
       setFlowState('PROCESSING_ANSWER');
-      fetchNextQuestion(sessionIdRef.current, answerToSubmit);
+      
+      // Delay slightly to compile chunks
+      setTimeout(async () => {
+        let finalAnswer = userAnswerRef.current.trim();
+        if (audioChunksRef.current.length > 0) {
+          try {
+            const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current?.mimeType || 'audio/webm' });
+            if (audioBlob.size > 100) {
+              const formData = new FormData();
+              formData.append('file', audioBlob, 'recording.webm');
+              
+              console.log("[Audio Recorder] Sending audio blob to Groq Whisper...");
+              const transcribeRes = await fetch(`${API_BASE}/api/transcribe`, {
+                method: 'POST',
+                body: formData
+              });
+              
+              if (transcribeRes.ok) {
+                const data = await transcribeRes.json();
+                if (data.transcript && data.transcript.trim()) {
+                  console.log("[Audio Recorder] Whisper Result:", data.transcript.trim());
+                  finalAnswer = data.transcript.trim();
+                }
+              }
+            }
+          } catch (e) {
+            console.error("Error transcribing with Whisper:", e);
+          }
+        }
+        
+        setUserAnswer('');
+        const answerToSubmit = finalAnswer || "Candidate did not respond.";
+        console.log("[Voice Log] Submitting transcribed answer:", answerToSubmit);
+        fetchNextQuestion(sessionIdRef.current, answerToSubmit);
+      }, 400);
     } else {
       startListening();
     }
@@ -1041,11 +1149,6 @@ export default function App() {
           </div>
           <span className="logo-text">AI Interviewer</span>
         </div>
-
-        <div className={`api-badge ${isDemoMode ? 'demo' : ''}`}>
-          <span className="dot"></span>
-          <span>{isDemoMode ? 'Demo Mode (Mock AI)' : 'Gemini AI Active'}</span>
-        </div>
       </header>
 
       {/* Main Container */}
@@ -1198,16 +1301,27 @@ export default function App() {
               )}
             </div>
 
-            <div style={{ marginTop: '2rem', textAlign: 'left', opacity: 0.75, fontSize: '0.85rem' }} className="glass-card">
-              <h4 style={{ color: 'var(--text-primary)', marginBottom: '0.5rem' }} className="flex-gap-2">
-                <Info size={14} /> Technology Architecture Notes
+            <div style={{ marginTop: '2rem', textAlign: 'left', opacity: 0.85, fontSize: '0.85rem' }} className="glass-card">
+              <h4 style={{ color: 'var(--primary)', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.95rem', fontWeight: 600 }}>
+                <Info size={16} /> How it Works & Interview Rules
               </h4>
-              <p className="mb-1">
-                <strong>Digital PDF Text Extraction:</strong> Performed instantly on the backend using python's <code>pypdf</code> library.
-              </p>
-              <p>
-                <strong>Scanned Document OCR:</strong> If you upload a scanned image or image-only PDF, the application triggers <code>tesseract.js</code> to run OCR directly in your browser. This bypasses the need for local system-level Tesseract binaries!
-              </p>
+              <ul style={{ paddingLeft: '1.2rem', margin: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem', color: 'var(--text-secondary)' }}>
+                <li>
+                  <strong>Step 1:</strong> Type the Target Job Role you are preparing for (e.g. AI Engineer, React Developer).
+                </li>
+                <li>
+                  <strong>Step 2:</strong> Select your Years of Experience using the slider.
+                </li>
+                <li>
+                  <strong>Step 3:</strong> Upload your Resume (PDF or Image). We will automatically scan and analyze your skills.
+                </li>
+                <li>
+                  <strong>Response Timing:</strong> After the interviewer asks a question, you have <strong>10 seconds</strong> to click "Start Answering" before the system nudges you or moves on.
+                </li>
+                <li>
+                  <strong>Speaking Time:</strong> Once recording starts, you have up to <strong>60 seconds</strong> to speak your answer before it auto-submits.
+                </li>
+              </ul>
             </div>
 
             {/* Past Interviews History (Always visible on start/front page) */}
@@ -1267,18 +1381,53 @@ export default function App() {
                           </p>
                         </div>
                       </div>
-                      {s.final_feedback?.verdict && (
-                        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', fontSize: '0.8rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.75rem', borderTop: '1px solid rgba(255,255,255,0.03)', paddingTop: '0.5rem' }}>
+                        {s.final_feedback?.verdict ? (
                           <span style={{
                             padding: '0.1rem 0.4rem',
                             borderRadius: '4px',
                             background: 'rgba(255,255,255,0.06)',
-                            color: 'var(--text-secondary)'
+                            color: 'var(--text-secondary)',
+                            fontSize: '0.8rem'
                           }}>
                             Verdict: <strong style={{ color: 'var(--text-primary)' }}>{s.final_feedback.verdict}</strong>
                           </span>
-                        </div>
-                      )}
+                        ) : (
+                          <span></span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteSession(s.session_id);
+                          }}
+                          style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: 'var(--text-tertiary)',
+                            cursor: 'pointer',
+                            padding: '0.25rem',
+                            borderRadius: '4px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            transition: 'all 0.2s ease',
+                          }}
+                          onMouseEnter={(e) => {
+                            e.stopPropagation();
+                            e.currentTarget.style.color = 'var(--danger)';
+                            e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.stopPropagation();
+                            e.currentTarget.style.color = 'var(--text-tertiary)';
+                            e.currentTarget.style.background = 'transparent';
+                          }}
+                          title="Delete Report"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1432,6 +1581,31 @@ export default function App() {
                     <Volume2 size={14} />
                     <span>{isVoiceMode ? 'Voice Mode: ON' : 'Voice Mode: OFF'}</span>
                   </button>
+
+                  {isVoiceMode && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', marginLeft: '0.25rem' }}>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>Accent:</span>
+                      <select
+                        value={speechLanguage}
+                        onChange={(e) => setSpeechLanguage(e.target.value)}
+                        style={{
+                          background: 'rgba(255, 255, 255, 0.05)',
+                          border: '1px solid var(--border-color)',
+                          borderRadius: '4px',
+                          color: 'var(--text-primary)',
+                          fontSize: '0.75rem',
+                          padding: '0.15rem 0.35rem',
+                          cursor: 'pointer',
+                          outline: 'none',
+                          fontWeight: 500
+                        }}
+                      >
+                        <option value="en-IN" style={{ background: '#1c1c1e' }}>English (IN) 🇮🇳</option>
+                        <option value="en-US" style={{ background: '#1c1c1e' }}>English (US) 🇺🇸</option>
+                        <option value="en-GB" style={{ background: '#1c1c1e' }}>English (UK) 🇬🇧</option>
+                      </select>
+                    </div>
+                  )}
 
                   {isVoiceMode && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.8rem', flexGrow: 1, justifyContent: 'space-between' }}>

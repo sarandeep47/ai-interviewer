@@ -10,3 +10,5 @@ sqlalchemy
 python-dotenv
 pymupdf
 psycopg2-binary
+groq
+
