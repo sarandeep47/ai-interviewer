@@ -104,23 +104,28 @@ def init_db():
             "clarification_count": "INTEGER"
         }
         
-        with engine.connect() as conn:
-            # Alter interview_sessions
-            for col_name, col_type in new_session_cols.items():
-                if col_name not in session_columns:
-                    logger.info(f"Adding column '{col_name}' to table 'interview_sessions'...")
-                    conn.execute(text(f"ALTER TABLE interview_sessions ADD COLUMN {col_name} {col_type}"))
-            
-            # Alter chat_messages
-            for col_name, col_type in new_chat_cols.items():
-                if col_name not in chat_columns:
-                    logger.info(f"Adding column '{col_name}' to table 'chat_messages'...")
-                    conn.execute(text(f"ALTER TABLE chat_messages ADD COLUMN {col_name} {col_type}"))
-                    
-            conn.commit()
-            logger.info("Database schema check/migration completed successfully.")
+        for table_name, cols_dict, existing_cols in [
+            ('interview_sessions', new_session_cols, session_columns),
+            ('chat_messages', new_chat_cols, chat_columns)
+        ]:
+            for col_name, col_type in cols_dict.items():
+                if col_name not in existing_cols:
+                    try:
+                        with engine.begin() as conn:
+                            logger.info(f"Adding column '{col_name}' to table '{table_name}'...")
+                            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}"))
+                    except Exception as col_err:
+                        err_msg = str(col_err).lower()
+                        if "already exists" in err_msg or "duplicate" in err_msg:
+                            logger.warning(f"Column '{col_name}' already exists in '{table_name}': {col_err}")
+                        else:
+                            logger.error(f"Failed to add column '{col_name}' to '{table_name}': {col_err}")
+                            raise col_err
+
+        logger.info("Database schema check/migration completed successfully.")
     except Exception as e:
         logger.error(f"Error during dynamic schema check/migration: {str(e)}")
+        raise e
 
 
 def get_db():

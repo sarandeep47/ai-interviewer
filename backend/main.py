@@ -265,51 +265,63 @@ def next_question(session_id: str, payload: AnswerRequest = None, db: Session = 
         ]
         
         # If candidate answered a previous question
-        if candidate_answer:
+        if candidate_answer or (session.current_question_index >= session.total_questions - 1 and messages_db and any(m.sender == "user" for m in messages_db[-2:])):
             # Check if this was the last question
             if session.current_question_index >= session.total_questions - 1:
-                # 1. Save final candidate response
-                candidate_msg = ChatMessage(
-                    session_id=session_id,
-                    sender="user",
-                    message=candidate_answer
-                )
-                db.add(candidate_msg)
-                chat_history.append({"role": "user", "content": candidate_answer})
-                db.commit()
+                # Check if final candidate answer and concluding response were already saved (e.g. from a failed previous feedback attempt)
+                already_saved_user = False
+                already_saved_ai = False
+                concluding_msg = None
+
+                if messages_db and len(messages_db) >= 2:
+                    last_msg = messages_db[-1]
+                    prev_msg = messages_db[-2]
+                    if prev_msg.sender == "user" and last_msg.sender == "ai":
+                        already_saved_user = True
+                        already_saved_ai = True
+                        concluding_msg = last_msg.message
+                    elif last_msg.sender == "user":
+                        already_saved_user = True
+
+                if not already_saved_user and candidate_answer:
+                    candidate_msg = ChatMessage(
+                        session_id=session_id,
+                        sender="user",
+                        message=candidate_answer
+                    )
+                    db.add(candidate_msg)
+                    chat_history.append({"role": "user", "content": candidate_answer})
+                    db.commit()
 
                 logger.info(f"[Interview Flow Log] Session {session_id}: Candidate answered the final question. Completing session.")
                 
-                # Generate concluding message
-                concluding_msg = AIService.generate_concluding_response(
-                    session.target_role,
-                    candidate_answer,
-                    session.candidate_name
-                )
+                if not already_saved_ai:
+                    concluding_msg = AIService.generate_concluding_response(
+                        session.target_role,
+                        candidate_answer or (messages_db[-1].message if messages_db else ""),
+                        session.candidate_name
+                    )
 
-                # Save AI concluding message to database so it's in the transcript
-                ai_concluding_chat = ChatMessage(
-                    session_id=session_id,
-                    sender="ai",
-                    message=concluding_msg
-                )
-                db.add(ai_concluding_chat)
-                chat_history.append({"role": "ai", "content": concluding_msg})
-                db.commit()
+                    ai_concluding_chat = ChatMessage(
+                        session_id=session_id,
+                        sender="ai",
+                        message=concluding_msg
+                    )
+                    db.add(ai_concluding_chat)
+                    chat_history.append({"role": "ai", "content": concluding_msg})
+                    db.commit()
 
-                # Update status to completed
-                session.current_question_index += 1
-                session.status = "completed"
-                db.commit()
-                
-                # Generate final feedback
+                # Generate final feedback first
                 final_feedback = AIService.generate_final_feedback(
                     session.resume_text,
                     session.target_role,
                     chat_history
                 )
                 
+                # Only mark completed after feedback is successfully generated and assigned
                 session.final_feedback = final_feedback
+                session.current_question_index += 1
+                session.status = "completed"
                 db.commit()
                 
                 return {
@@ -439,6 +451,16 @@ def terminate_session(session_id: str, db: Session = Depends(get_db)):
     if not session:
         raise HTTPException(status_code=404, detail="Interview session not found.")
         
+    # Guard: Session cannot be marked as no_show if already completed or candidate answered questions
+    user_msg_exists = db.query(ChatMessage).filter(
+        ChatMessage.session_id == session_id,
+        ChatMessage.sender == "user"
+    ).first() is not None
+
+    if session.status == "completed" or session.current_question_index > 0 or user_msg_exists:
+        logger.warning(f"[Interview Flow Log] Session {session_id} cannot be terminated as NO_SHOW (status={session.status}, index={session.current_question_index}).")
+        return {"status": "ignored", "session_status": session.status, "message": "Session has active participation or is already completed."}
+
     session.status = "no_show"
     db.commit()
     logger.info(f"[Interview Flow Log] Session {session_id} marked as NO_SHOW and terminated.")
@@ -486,11 +508,22 @@ def get_report(session_id: str, db: Session = Depends(get_db)):
         } for m in messages
     ]
     
+    # Guard: Ensure status representation is consistent across active, completed, and no_show sessions
+    reported_status = session.status
+    has_user_responses = any(m.sender == "user" for m in messages)
+
+    if reported_status == "completed" or session.final_feedback:
+        reported_status = "completed"
+    elif reported_status == "no_show" and not (has_user_responses or session.current_question_index > 0):
+        reported_status = "no_show"
+    else:
+        reported_status = "ongoing"
+
     return {
         "candidate_name": session.candidate_name,
         "candidate_email": session.candidate_email,
         "target_role": session.target_role,
-        "status": session.status,
+        "status": reported_status,
         "created_at": session.created_at.isoformat(),
         "final_feedback": session.final_feedback,
         "transcript": transcript
