@@ -81,8 +81,6 @@ export default function App() {
   const [candidateName, setCandidateName] = useState<string>('');
   const [candidateEmail, setCandidateEmail] = useState<string>('');
   const [file, setFile] = useState<File | null>(null);
-  const [pasteText, setPasteText] = useState<string>('');
-  const [isPasteMode] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadError, setUploadError] = useState<string>('');
 
@@ -149,6 +147,8 @@ export default function App() {
   const stableTranscriptRef = useRef<string>('');
   const flowStateRef = useRef<FlowState>('AI_SPEAKING');
   const nudgeCountRef = useRef<number>(0);
+  const streamRef = useRef<MediaStream | null>(null);
+  const isListeningRequestedRef = useRef<boolean>(false);
 
   // Update ref whenever candidateName changes to avoid stale closures in timers
   useEffect(() => {
@@ -190,6 +190,11 @@ export default function App() {
         try {
           recognitionRef.current.stop();
         } catch (e) {}
+      }
+      isListeningRequestedRef.current = false;
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
     };
   }, []);
@@ -511,6 +516,7 @@ export default function App() {
 
     setFlowState('LISTENING');
     micStartTimeRef.current = Date.now();
+    isListeningRequestedRef.current = true;
     console.log("[Voice Log] Mic started");
 
     // Initialize MediaRecorder for Whisper audio capture
@@ -518,6 +524,13 @@ export default function App() {
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       navigator.mediaDevices.getUserMedia({ audio: true })
         .then(stream => {
+          if (!isListeningRequestedRef.current) {
+            console.log("[Voice Log] getUserMedia resolved after stopListening was called. Stopping stream immediately.");
+            stream.getTracks().forEach(track => track.stop());
+            return;
+          }
+          streamRef.current = stream;
+
           const options = { mimeType: 'audio/webm' };
           let recorder: MediaRecorder;
           try {
@@ -607,6 +620,7 @@ export default function App() {
   };
 
   const stopListening = () => {
+    isListeningRequestedRef.current = false;
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
@@ -622,6 +636,14 @@ export default function App() {
       } catch (e) {
         console.error("Error stopping MediaRecorder:", e);
       }
+    }
+    if (streamRef.current) {
+      try {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      } catch (e) {
+        console.error("Error stopping stream tracks:", e);
+      }
+      streamRef.current = null;
     }
     stopCountdown();
   };
@@ -890,13 +912,7 @@ export default function App() {
 
     setUploadError('');
 
-    // 1. Text Paste Mode
-    if (isPasteMode && pasteText) {
-      await startInterviewWithText(pasteText);
-      return;
-    }
-
-    // 2. File Upload Mode
+    // File Upload Mode
     if (file) {
       setIsUploading(true);
       setUploadStep(0);
@@ -1125,7 +1141,6 @@ export default function App() {
     setFlowState('AI_SPEAKING');
     setStep('upload');
     setFile(null);
-    setPasteText('');
     setCandidateName('');
     setCandidateEmail('');
     setSessionId('');
@@ -1536,7 +1551,7 @@ export default function App() {
                     <div style={{
                       height: '100%',
                       background: 'var(--grad-primary)',
-                      width: `${((currentQuestionIndex) / totalQuestions) * 100}%`,
+                      width: `${totalQuestions > 0 ? (Math.min(currentQuestionIndex + 1, totalQuestions) / totalQuestions) * 100 : 0}%`,
                       transition: 'width 0.3s ease'
                     }}></div>
                   </div>

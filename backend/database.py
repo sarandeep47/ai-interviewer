@@ -52,7 +52,7 @@ class ChatMessage(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     session_id = Column(String, ForeignKey("interview_sessions.id", ondelete="CASCADE"), nullable=False)
-    sender = Column(String, nullable=False)  # 'ai' or 'candidate'
+    sender = Column(String, nullable=False)  # 'ai' or 'user'
     message = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=datetime.utcnow)
     evaluation = Column(Text, nullable=True)  # Stores brief AI assessment of the candidate's answer

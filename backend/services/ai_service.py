@@ -433,9 +433,17 @@ class AIService:
         else:
             prev_q_str = "None"
             
-        rejected_str = ", ".join([f'"{rq}"' for rq in rejected_questions]) if rejected_questions else "None"
+        # Loop to ensure similarity check passes
+        rejected = []
+        previous_q_texts = [pq.get("question") for pq in previous_questions] if previous_questions else []
 
-        prompt = f"""
+        for attempt in range(3):
+            try:
+                all_rejected = list(rejected_questions) if rejected_questions else []
+                all_rejected.extend(rejected)
+                rejected_str = ", ".join([f'"{rq}"' for rq in all_rejected]) if all_rejected else "None"
+
+                prompt = f"""
         You are a professional technical AI Interviewer conducting a screening for: {target_role}.
         Candidate Name: {candidate_name}
         
@@ -488,12 +496,6 @@ class AIService:
         }}
         """
 
-        # Loop to ensure similarity check passes
-        rejected = []
-        previous_q_texts = [pq.get("question") for pq in previous_questions] if previous_questions else []
-        
-        for attempt in range(3):
-            try:
                 if IS_DEMO_MODE:
                     mock_questions = [
                         f"Welcome {candidate_name}! Let's start the mock interview for the {target_role} position. To kick things off, could you please introduce yourself and tell me a bit about your professional background?",
@@ -528,9 +530,6 @@ class AIService:
                 if not is_clarification and not is_intro_or_closing and cls._is_too_similar(new_q, previous_q_texts):
                     logger.warning(f"Generated question was too similar to previous questions: '{new_q}'. Rejecting and retrying.")
                     rejected.append(new_q)
-                    # Reconstruct prompt with rejected questions
-                    rejected_str = ", ".join([f'"{rq}"' for rq in rejected])
-                    prompt = prompt.replace(f"Rejected Questions (due to being too similar to previous questions):\n{rejected_str if len(rejected) > 1 else 'None'}", f"Rejected Questions (due to being too similar to previous questions):\n{rejected_str}")
                     continue
                 
                 return response_data
