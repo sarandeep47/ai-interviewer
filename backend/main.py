@@ -24,10 +24,20 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Interviewer API", version="1.0.0")
 
-# Enable CORS for frontend
+# Configure CORS for frontend origins
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS")
+if allowed_origins_env:
+    allowed_origins = [origin.strip() for origin in allowed_origins_env.split(",") if origin.strip()]
+else:
+    allowed_origins = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000"
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For dev, we allow all. Can restrict to http://localhost:5173 in production.
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -92,6 +102,12 @@ async def upload_resume(
     try:
         file_bytes = await file.read()
         
+        # Max file size limit: 10 MB (10 * 1024 * 1024 bytes)
+        MAX_FILE_SIZE = 10 * 1024 * 1024
+        if len(file_bytes) > MAX_FILE_SIZE:
+            logger.warning(f"File upload rejected: '{file.filename}' size ({len(file_bytes)} bytes) exceeds 10 MB limit.")
+            raise HTTPException(status_code=413, detail="File size exceeds maximum limit of 10 MB.")
+
         # Parse the resume text
         parse_result = parse_resume(file_bytes, file.filename, file.content_type)
         
@@ -139,6 +155,8 @@ async def upload_resume(
             "status": "started"
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in upload_resume endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
