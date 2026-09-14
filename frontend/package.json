@@ -10,11 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@prisma/adapter-pg": "^7.8.0",
-    "@prisma/client": "^7.8.0",
-    "dotenv": "^17.4.2",
     "lucide-react": "^1.18.0",
-    "pg": "^8.22.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "tesseract.js": "^7.0.0"

@@ -36,12 +36,15 @@ The system operates under strict rules defined across its service layers and use
   * **Experience Level**: Scans for seniority keywords (e.g., senior, lead, architect -> `Senior`; junior, intern, student -> `Entry-level`), defaulting to `Mid-level`.
 
 ### 3. Interview Flow & Question Progression Rules
-The interview operates on a strict **5-Question Flow** matching specific sequential indices (0 to 4):
-* **Index 0 (Introduction)**: The AI greets the candidate by their extracted name and invites them to introduce themselves.
-* **Index 1 (Project Probing)**: Evaluates the candidate's introduction. If a project was mentioned, it probes details about it. If not, it extracts a project from the parsed resume text and asks the candidate to describe their contribution.
-* **Index 2 (Core Role Concepts)**: Asks role-specific conceptual questions (e.g., FastAPI vs standard REST API design patterns).
-* **Index 3 (General Engineering Practices)**: Probes technical topics outside projects (e.g., testing, databases, security, performance, or system design).
-* **Index 4 (Closing/Goodbye)**: Concludes the interview, asks the candidate if they have any final questions, and thanks them for their time.
+The interview operates on an **8-Question Flow** matching specific sequential indices (0 to 7):
+* **Index 0 (Introduction)**: Welcome the candidate by name, introduce yourself, ask them to introduce themselves.
+* **Index 1 (Projects)**: Walk through one of their projects, frontend/backend architecture, and their specific contributions.
+* **Index 2 (Challenges)**: The biggest technical challenge faced in that project and how they overcame it.
+* **Index 3 (AI Fundamentals)**: AI/Machine Learning concepts (e.g., supervised vs unsupervised learning, overfitting, bias-variance trade-off).
+* **Index 4 (Generative AI)**: LLM/Generative AI (e.g., prompt engineering, RAG, reducing hallucinations, vector databases).
+* **Index 5 (Automation)**: Automation workflows, AI operations, monitoring, model downtime, API failures.
+* **Index 6 (System Design)**: System design & scalability (e.g., scalable AI interview platform, handling concurrent users, cost reduction).
+* **Index 7 (Closing/Goodbye)**: Assess mindset/learning, and ask: "Do you have any questions for us?"
 
 ### 4. Conversation Continuity & Answer Validation Rules
 * **Personalized Address**: The AI refers to the candidate by their extracted/provided name throughout the interview instead of generic greeting terms.

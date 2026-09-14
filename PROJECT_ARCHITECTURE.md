@@ -75,15 +75,18 @@ flowchart TD
 ---
 
 ### B. State-Aware Interview Flow
-The interview operates on a strict **5-Question State Machine** matching indices $0$ to $4$:
+The interview operates on an **8-Question State Machine** matching indices $0$ to $7$:
 
 | Index | Interview Stage | Behavioral Objective |
 |---|---|---|
-| **0** | **Introduction** | AI greets the candidate by their extracted name and invites them to introduce themselves. |
-| **1** | **Project Probing** | Evaluates the candidate's introduction. Probes a project mentioned in their intro, or parses one from their resume to query. |
-| **2** | **Core Concept** | Role-specific conceptual concepts (e.g. FastAPI vs standard REST APIs). |
-| **3** | **General Engineering** | System design, testing strategies, security, performance, or database structures. |
-| **4** | **Closing / Questions** | Concludes technical questions and prompts the candidate: "Do you have any questions?" |
+| **0** | **Introduction** | Welcome the candidate by name, introduce yourself, ask them to introduce themselves. |
+| **1** | **Projects** | Walk through one of their projects, frontend/backend architecture, and their specific contributions. |
+| **2** | **Challenges** | The biggest technical challenge faced in that project and how they overcame it. |
+| **3** | **AI Fundamentals** | AI/Machine Learning concepts (e.g., supervised vs unsupervised learning, overfitting, bias-variance trade-off). |
+| **4** | **Generative AI** | LLM/Generative AI (e.g., prompt engineering, RAG, reducing hallucinations, vector databases). |
+| **5** | **Automation** | Automation workflows, AI operations, monitoring, model downtime, API failures. |
+| **6** | **System Design** | System design & scalability (e.g., scalable AI interview platform, handling concurrent users, cost reduction). |
+| **7** | **Closing / Questions** | Assess mindset/learning, and ask: "Do you have any questions for us?" |
 
 ---
 
@@ -111,7 +114,7 @@ stateDiagram-v2
 1.  **Strict TTS/STT Sequencing**: Web Speech SpeechRecognition is strictly paused while SpeechSynthesis is vocalizing AI responses. The microphone is disabled to prevent the browser from recording its own speakers.
 2.  **10-Second Idle Timer**: Starts when the AI finishes speaking.
     *   *Question 0*: Plays a personal nudge ("Are you there, [Name]?") up to three times. On the fourth idle event, it terminates the session as a `no_show`.
-    *   *Questions 1-4*: Plays a skip prompt and automatically calls the next question endpoint with `"Candidate did not respond"`.
+    *   *Questions 1-7*: Plays a skip prompt and automatically calls the next question endpoint with `"Candidate did not respond"`.
 3.  **60-Second Speech Timer**: While recording, a countdown timer runs. If it hits zero, it turns off the microphone, saves the buffer, and submits the current transcribed content.
 
 ---
@@ -130,7 +133,7 @@ Managed via SQLAlchemy in `database.py`. It establishes a 1-to-Many cascade rela
 │ - target_role (String, Default)        │
 │ - resume_text (Text, Nullable)         │
 │ - current_question_index (Integer, 0)  │
-│ - total_questions (Integer, 5)         │
+│ - total_questions (Integer, 8)         │
 │ - status (String, Default: 'started')  │
 │ - created_at (DateTime, UTCNow)        │
 │ - final_feedback (JSON, Nullable)      │
@@ -190,7 +193,7 @@ Launches session directly when sending pre-parsed text (used after browser Tesse
       "candidate_email": "john@example.com",
       "target_role": "React Developer",
       "resume_text": "Full resume plain text...",
-      "total_questions": 5
+      "total_questions": 8
     }
     ```
 *   **Outputs**: Identical structure to successful upload response.
@@ -272,17 +275,20 @@ Candidate's Resume:
 {resume_text}
 
 Current Question Index: {question_index} (0-indexed)
-Total Questions: 5
+Total Questions: 8
 
 Here is the conversation history so far:
 {history_str}
 
 Your task is to generate the question for index {question_index} following this strict interview flow:
-- Index 0: Introduce yourself as the AI Interviewer, welcome the candidate by their name ({candidate_name}) to the screening for the {target_role} role, and ask them to introduce themselves.
-- Index 1: Read their introduction. If they mentioned a project in their introduction, ask probing questions about that specific project. If they did not mention a project, identify a relevant project in their resume and ask them to describe it and their contributions.
-- Index 2: Ask a question about core technical terms or concepts related to the target role (for example, if the role is related to APIs/web services, ask "What is the difference between FastAPI and REST API?", or other relevant role-specific concepts).
-- Index 3: Ask a technical question related to the job outside of their projects (e.g., testing, databases, security, performance, or system design).
-- Index 4 (Pre-final Question): State that the technical questions are finished, and ask the candidate: "Do you have any questions?"
+- Index 0: INTRODUCTION. Welcome the candidate by name, introduce yourself, ask them to introduce themselves. (Topic: INTRODUCTION, Intent: INTRO_DISCUSSION)
+- Index 1: PROJECTS. Walk through one of their projects, frontend/backend architecture, and their specific contributions. (Topic: PROJECTS, Intent: PROJECT_DISCUSSION)
+- Index 2: CHALLENGES. The biggest technical challenge faced in that project and how they overcame it. (Topic: CHALLENGES, Intent: CHALLENGE_DISCUSSION)
+- Index 3: AI_FUNDAMENTALS. AI/Machine Learning concepts. E.g., supervised vs unsupervised learning, overfitting, bias-variance trade-off, model evaluation. (Topic: AI_FUNDAMENTALS, Intent: AI_CONCEPT_DISCUSSION)
+- Index 4: GENERATIVE_AI. LLM/Generative AI. E.g., building applications using LLMs, prompt engineering, RAG, reducing hallucinations, vector databases. (Topic: GENERATIVE_AI, Intent: GEN_AI_DISCUSSION)
+- Index 5: AUTOMATION. Automation workflows, AI operations, monitoring, model downtime, api failures. (Topic: AUTOMATION, Intent: AUTOMATION_DISCUSSION)
+- Index 6: SYSTEM_DESIGN. System design & scalability. E.g., scalable AI interview platform, handling concurrent users, optimizing performance, cost reduction. (Topic: SYSTEM_DESIGN, Intent: DESIGN_DISCUSSION)
+- Index 7: CLOSING. Assess mindset/learning, and ask: "Do you have any questions for us?" (Topic: CLOSING, Intent: CLOSING_DISCUSSION)
 
 Answer Checking, Relevance & Continuity Rules:
 1. Always address the candidate by their name ({candidate_name}) if known, instead of generic terms like "Candidate".
@@ -366,5 +372,5 @@ The output MUST adhere to this strict JSON structure:
 
 If `GEMINI_API_KEY` is not detected in `.env`, the system automatically enters **Demo Mode**. 
 *   **Metadata Extraction Fallback**: The backend uses local regular expressions to find emails, and matches lines of capital words against common dictionary skip-filters to isolate the candidate name. A search is performed for 20 common developer skills.
-*   **Interview Progression Fallback**: Rather than requesting questions dynamically from Gemini, the backend retrieves preset questions matching each of the 5 indices.
+*   **Interview Progression Fallback**: Rather than requesting questions dynamically from Gemini, the backend retrieves preset questions matching each of the 8 indices.
 *   **Final Report Fallback**: Generates mock evaluation reports demonstrating the exact schema and UI layout capabilities.

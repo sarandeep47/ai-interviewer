@@ -23,6 +23,12 @@ import Tesseract from 'tesseract.js';
 
 const API_BASE = "http://localhost:8000";
 
+const THINKING_MESSAGES = [
+  "Analyzing your response...",
+  "Evaluating answer quality...",
+  "Preparing next question..."
+];
+
 type FlowState = 'WAITING_FOR_MIC_CLICK' | 'LISTENING' | 'PROCESSING_ANSWER' | 'AI_SPEAKING' | 'QUESTION_SKIPPED' | 'INTERVIEW_COMPLETED';
 
 interface ChatMessage {
@@ -110,11 +116,6 @@ export default function App() {
   // Progressive UX loading states
   const [uploadStep, setUploadStep] = useState<number>(0);
   const [thinkingStep, setThinkingStep] = useState<number>(0);
-  const THINKING_MESSAGES = [
-    "Analyzing your response...",
-    "Evaluating answer quality...",
-    "Preparing next question..."
-  ];
 
   // Rotate AI thinking messages while submitting
   useEffect(() => {
@@ -144,7 +145,6 @@ export default function App() {
   const timerTypeRef = useRef<'idle' | 'speech' | null>(null);
   const sessionIdRef = useRef<string>('');
   const currentQuestionIndexRef = useRef<number>(0);
-  const stableTranscriptRef = useRef<string>('');
   const flowStateRef = useRef<FlowState>('AI_SPEAKING');
   const nudgeCountRef = useRef<number>(0);
   const streamRef = useRef<MediaStream | null>(null);
@@ -508,7 +508,6 @@ export default function App() {
   const startListening = () => {
     stopSpeaking();
     stopCountdown();
-    stableTranscriptRef.current = '';
     userAnswerRef.current = '';
     setUserAnswer('');
     setNudgeCount(0);
@@ -1090,7 +1089,6 @@ export default function App() {
     stopSpeaking();
     stopListening();
     stopCountdown();
-    stableTranscriptRef.current = '';
 
     const answerToSend = userAnswer.trim();
     setUserAnswer('');
@@ -1134,7 +1132,6 @@ export default function App() {
     stopSpeaking();
     stopListening();
     stopCountdown();
-    stableTranscriptRef.current = '';
     setNudgeCount(0);
     nudgeCountRef.current = 0;
 
