@@ -7,7 +7,7 @@ Write-Host "=========================================" -ForegroundColor Cyan
 
 # 1. Start FastAPI Backend in a new window
 Write-Host "[+] Launching FastAPI backend on http://localhost:8000..." -ForegroundColor Green
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "Write-Host 'Starting Backend (FastAPI)...' -ForegroundColor Green; cd backend; .\venv\Scripts\python.exe -m uvicorn main:app --reload --port 8000"
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "Write-Host 'Starting Backend (FastAPI)...' -ForegroundColor Green; cd backend; python -m uvicorn main:app --reload --port 8000"
 
 # 2. Start Vite Frontend in a new window
 Write-Host "[+] Launching Vite frontend on http://localhost:5173..." -ForegroundColor Green

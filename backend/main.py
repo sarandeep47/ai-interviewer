@@ -82,7 +82,18 @@ def run_llm_analysis_background(session_id: str, resume_text: str, target_role: 
 
 @app.get("/")
 def read_root():
-    return {"message": "AI Interviewer Backend is running!", "demo_mode": os.getenv("GEMINI_API_KEY") is None}
+    return {
+        "message": "AI Interviewer Backend is running!",
+        "demo_mode": os.getenv("GEMINI_API_KEY") is None and os.getenv("GROQ_API_KEY") is None
+    }
+
+@app.get("/api/health/ai")
+def health_check_ai():
+    """
+    Health check endpoint to test and verify both Groq and Gemini AI APIs.
+    """
+    return AIService.check_ai_status()
+
 
 @app.post("/api/upload-resume")
 async def upload_resume(

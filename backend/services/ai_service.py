@@ -39,11 +39,54 @@ if IS_DEMO_MODE:
     logger.warning("No GEMINI_API_KEY or GROQ_API_KEY found in environment. Running in Demo Mode.")
 
 # Model configurations (can be overridden via environment variables)
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 
 class AIService:
+    @classmethod
+    def check_ai_status(cls) -> Dict[str, Any]:
+        """
+        Performs a health check on both Groq and Gemini AI APIs.
+        Returns a detailed status dict for both providers.
+        """
+        results = {
+            "demo_mode": IS_DEMO_MODE,
+            "groq": {"status": "DISABLED", "model": GROQ_MODEL, "detail": None},
+            "gemini": {"status": "DISABLED", "model": GEMINI_MODEL, "detail": None}
+        }
+        
+        # Test Groq
+        if groq_client:
+            try:
+                res = groq_client.chat.completions.create(
+                    model=GROQ_MODEL,
+                    messages=[{"role": "user", "content": "Respond with OK"}],
+                    max_tokens=10
+                )
+                results["groq"]["status"] = "WORKING"
+                results["groq"]["detail"] = res.choices[0].message.content.strip()
+            except Exception as e:
+                results["groq"]["status"] = "FAILED"
+                results["groq"]["detail"] = str(e)
+        else:
+            results["groq"]["detail"] = "GROQ_API_KEY not configured"
+
+        # Test Gemini
+        if gemini_key:
+            try:
+                model = genai.GenerativeModel(GEMINI_MODEL)
+                res = model.generate_content("Respond with OK")
+                results["gemini"]["status"] = "WORKING"
+                results["gemini"]["detail"] = res.text.strip()
+            except Exception as e:
+                results["gemini"]["status"] = "FAILED"
+                results["gemini"]["detail"] = str(e)
+        else:
+            results["gemini"]["detail"] = "GEMINI_API_KEY not configured"
+
+        return results
+
     @classmethod
     def _call_llm_json(cls, prompt: str, system_instruction: Optional[str] = None) -> Dict[str, Any]:
         """
